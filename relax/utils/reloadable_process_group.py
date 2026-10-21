@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Relax Authors. All Rights Reserved.
+
 import os
 import time
 from contextlib import contextmanager
@@ -31,9 +33,14 @@ def monkey_patch_torch_dist(args=None):
     old_new_group = dist.new_group
     old_new_group_dict[pid] = old_new_group
     dist.old_new_group = old_new_group
+    use_reloadable_groups = getattr(args, "offload_train", True)
 
     def new_group(*args, **kwargs):
         group = old_new_group(*args, **kwargs)
+        # Resident training never destroys/reloads groups. Keep the registered
+        # native ProcessGroup metadata required by torch.compile collectives.
+        if not use_reloadable_groups:
+            return group
         # skip none nccl group.
         if len(args) >= 3 and args[2] == "gloo" or "backend" in kwargs and kwargs["backend"] == "gloo":
             return group

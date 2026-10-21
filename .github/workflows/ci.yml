@@ -94,6 +94,14 @@ jobs:
           os.makedirs(sp, exist_ok=True)
           with open(os.path.join(sp, 'transfer_queue.py'), 'w') as f:
               f.write('# CI stub for transfer_queue (internal package)\n')
+              f.write('__relax_ci_stub__ = True\n')
+              # Keep a module spec: real-TQ tests use it to reject this stub.
+              # Only expose the base class needed to import wholepack helpers.
+              f.write('import sys, types\n')
+              f.write('sampler = types.ModuleType(\"transfer_queue.sampler\")\n')
+              f.write('class BaseSampler: pass\n')
+              f.write('sampler.BaseSampler = BaseSampler\n')
+              f.write('sys.modules[sampler.__name__] = sampler\n')
               f.write('class StreamingTokenBudgetSampler:\n')
               f.write('    def __init__(self, *a, **k): self._states = {}\n')
               f.write('class SeqlenBalancedSampler(StreamingTokenBudgetSampler): pass\n')

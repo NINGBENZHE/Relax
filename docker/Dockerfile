@@ -147,10 +147,13 @@ RUN wget -q https://github.com/apptainer/apptainer/releases/download/v1.4.1/appt
 
 COPY requirements.txt /tmp/requirements.txt
 
-RUN pip install --ignore-installed PyJWT && \
+RUN --mount=type=bind,source=docker/patch/transferqueue/9784ad0-assignment-transform.patch,target=/tmp/tq-assignment.patch \
+    pip install --ignore-installed PyJWT && \
     pip install -r /tmp/requirements.txt --no-cache-dir && \
     pip install --no-cache-dir "compressed_tensors>=0.13.0" tensordict==0.10.0 pyvers==0.1.0 'nvidia-modelopt[hf]==0.44.0' --no-deps && \
-    pip install "transferqueue @ git+https://github.com/redai-studio/TransferQueue.git@9784ad0d8a5f0db93ff8326379ab2a6d06e640a0" --no-deps
+    pip install "transferqueue @ git+https://github.com/redai-studio/TransferQueue.git@9784ad0d8a5f0db93ff8326379ab2a6d06e640a0" --no-deps && \
+    TQ_SITE="$(python -c 'import importlib.util; from pathlib import Path; print(Path(importlib.util.find_spec("transfer_queue").origin).parent.parent)')" && \
+    patch --batch --forward --fuzz=0 -d "$TQ_SITE" -p1 < /tmp/tq-assignment.patch
 
 # MCore's pinned revision requires the NVRx 0.6 async checkpoint API.
 # Build the fixed v0.6.0 source for bases older than the wheel's glibc 2.39.

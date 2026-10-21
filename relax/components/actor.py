@@ -176,7 +176,6 @@ class Actor(Base):
         try:
             while True:
                 if self._stop_event.is_set():
-                    self._logger.info("Actor background loop stopping by request")
                     break
 
                 with self._lock:
@@ -212,9 +211,22 @@ class Actor(Base):
         except Exception as e:
             error_msg = f"Actor training failed at step {self.step}: {type(e).__name__}: {str(e)}"
             self._logger.exception(error_msg)
-            self.healthy.report_error.remote("actor", error_msg)
-            if not getattr(self.config, "use_health_check", False):
-                raise
+            try:
+                # Acknowledge the report before waiting for the supervisor. A failed
+                # report must not hide the original training exception.
+                ray.get(self.healthy.report_error.remote("actor", error_msg), timeout=30)
+            except Exception:
+                self._logger.exception("Failed to report actor training failure")
+                raise e
+            if getattr(self.config, "use_health_check", False):
+                # Keep run() pending until recovery stops/deletes this replica.
+                # Returning here races the health checker and reports false success.
+                self._stop_event.wait()
+            raise
+
+        # A requested stop is incomplete training, but not a health failure.
+        if self.step < self.config.num_rollout:
+            raise RuntimeError("Actor stopped before all training steps finished")
 
     def _wait_for_rollout_data(self) -> bool:
         """Wait for rollout data to be ready in async colocate mode.

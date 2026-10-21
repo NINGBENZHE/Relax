@@ -34,8 +34,14 @@ def component(request, monkeypatch):
 
 @pytest.mark.parametrize("health_check", [False, True])
 @pytest.mark.parametrize("report_fails", [False, True])
-async def test_component_concurrent_failure_preserves_health_policy(component, health_check, report_fails):
+async def test_component_concurrent_failure_preserves_health_policy(
+    component, health_check, report_fails, monkeypatch
+):
     component.config.use_health_check = health_check
+    report_ack = threading.Event()
+    if component.role == "actor":
+        namespace = type(component)._background_run.__globals__
+        monkeypatch.setitem(namespace, "ray", Mock(get=lambda ref, timeout: report_ack.set()))
     release = threading.Event()
     error = ValueError("compute failed")
     report_error = RuntimeError("health report failed")
@@ -54,9 +60,15 @@ async def test_component_concurrent_failure_preserves_health_policy(component, h
         await asyncio.sleep(0)
     finally:
         release.set()
+    if component.role == "actor" and health_check and not report_fails:
+        assert await asyncio.to_thread(report_ack.wait, 5)
+        assert all(not task.done() for task in tasks)
+        component._stop_event.set()
     results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 5)
     expected = None if health_check else error
-    if report_fails and component.role != "critic":
+    if component.role == "actor":
+        expected = error
+    elif report_fails and component.role != "critic":
         expected = report_error
     assert all(result is expected for result in results)
     worker.assert_called_once()

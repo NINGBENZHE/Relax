@@ -196,6 +196,8 @@ class Controller:
         # training thread must always refer to the same event generation.
         if not hasattr(self, "_restart_done_event"):
             self._restart_done_event = threading.Event()
+        if not hasattr(self, "_restart_lock"):
+            self._restart_lock = threading.RLock()
         if not hasattr(self, "_restart_consumed_event"):
             # A HealthChecker snapshot may contain multiple unhealthy roles.
             # Do not let the next callback overwrite this cycle's mode/error
@@ -222,7 +224,7 @@ class Controller:
 
         # SFT: fill in num_rollout / num_rollout_per_epoch before any actor
         # is launched (RL is resolved later in placement_group.py).
-        resolve_sft_num_rollout(self.config)
+        self._sft_line_offsets_cache = resolve_sft_num_rollout(self.config)
 
         try:
             # Include data-system initialization in the constructor cleanup
@@ -359,10 +361,21 @@ class Controller:
             )
             logger.info("Using IdentityWindowSampler (fully_async + dynamic batch)")
         elif algo_key == "sft":
-            sampler = SeqlenBalancedSampler(
-                n_samples_per_prompt=self.config.n_samples_per_prompt,
-                dp_size=dp_size,
-            )
+            from relax.utils.data.wholepack import WholepackSampler, config_contract, enabled
+
+            if enabled(self.config):
+                capacity, pad_size = config_contract(self.config)
+                sampler = WholepackSampler(
+                    n_samples_per_prompt=self.config.n_samples_per_prompt,
+                    dp_size=dp_size,
+                    capacity=capacity,
+                    pad_size=pad_size,
+                )
+            else:
+                sampler = SeqlenBalancedSampler(
+                    n_samples_per_prompt=self.config.n_samples_per_prompt,
+                    dp_size=dp_size,
+                )
             logger.info(f"Using SeqlenBalancedSampler with dp_size={dp_size}")
         elif getattr(self.config, "balance_data", False):
             sampler = IdentityWindowSampler(dp_size=dp_size, placement="balanced")
@@ -683,7 +696,7 @@ class Controller:
                 # DeploymentResponse / DeploymentResponseGenerator carry their own
                 # cancel(); plain ObjectRefs go through ray.cancel().
                 if isinstance(ref, ray.ObjectRef):
-                    ray.cancel(ref, force=True)
+                    ray.cancel(ref, force=False)
                 elif hasattr(ref, "cancel"):
                     ref.cancel()
                 else:
@@ -701,15 +714,16 @@ class Controller:
     def _consume_restart_cycle(self) -> tuple[str, Optional[BaseException]]:
         """Snapshot one completed restart before acknowledging its
         generation."""
-        self._restart_done_event.clear()
-        restart_mode = self._restart_mode or "unknown"
-        restart_error = self._restart_error
+        with self._restart_lock:
+            self._restart_done_event.clear()
+            restart_mode = self._restart_mode or "unknown"
+            restart_error = self._restart_error
 
-        # Commit all state changes for this cycle before publishing the
-        # acknowledgement. After set(), the health checker may immediately
-        # start the next generation and own these fields.
-        self._restarting = False
-        self._restart_mode = None
+            # Commit all state changes for this cycle before publishing the
+            # acknowledgement. After set(), the health checker may immediately
+            # start the next generation and own these fields.
+            self._restarting = False
+            self._restart_mode = None
         self._restart_consumed_event.set()
         return restart_mode, restart_error
 
@@ -755,11 +769,15 @@ class Controller:
         if not hasattr(self, "_startup_abort_event"):
             self._startup_abort_event = threading.Event()
         try:
+            service_config = self.config
+            if role == "sft" and getattr(self, "_sft_line_offsets_cache", None) is not None:
+                service_config = copy.copy(self.config)
+                service_config._sft_line_offsets_cache = self._sft_line_offsets_cache
             service = Service(
                 cls,
                 role=role,
                 healthy=self._health_manager.status,
-                config=self.config,
+                config=service_config,
                 num_gpus=num_gpus,
                 data_source=data_source,
                 actor_rollout_pgs=actor_rollout_pgs if actor_rollout_pgs and role in actor_rollout_pg_roles else None,
@@ -1348,6 +1366,10 @@ class Controller:
                 try:
                     await asyncio.gather(*task_refs)
                     logger.info("Service task completed successfully")
+                except asyncio.CancelledError as e:
+                    if not self._restarting:
+                        raise
+                    raise RuntimeError("Service task cancelled for recovery") from e
                 except Exception as e:
                     raise RuntimeError(f"Service task failed: {e}")
                 finally:
@@ -1358,6 +1380,8 @@ class Controller:
         while True:
             try:
                 run(run_all_services(resume_existing=resume_existing))
+                if self._restarting:
+                    raise RuntimeError("Service completion interrupted by recovery")
                 logger.info("All services running successfully")
                 return  # Normal completion, exit
             except Exception as e:
@@ -1464,6 +1488,35 @@ class Controller:
         self._health_manager.stop(timeout)
 
     def restart_serve(self, role: str) -> None:
+        """Publish each recovery generation before work that can fail."""
+        while True:
+            self._restart_consumed_event.wait()
+            with self._restart_lock:
+                if not self._restart_consumed_event.is_set():
+                    continue
+                self._restart_consumed_event.clear()
+                self._restarting = True
+                self._restart_done_event.clear()
+                self._restart_error = None
+                self._restart_mode = "global"
+                break
+        try:
+            self._restart_serve(role)
+        except BaseException as exc:
+            self._restart_error = exc
+            logger.exception("Service recovery failed")
+        finally:
+            if self._restart_error is not None:
+                checker = getattr(self._health_manager, "_checker", None)
+                if checker is not None:
+                    checker._stop_event.set()
+                try:
+                    self._cancel_pending_tasks()
+                except BaseException as cancel_error:
+                    logger.warning(f"Failed to cancel tasks after recovery error: {cancel_error}")
+            self._restart_done_event.set()
+
+    def _restart_serve(self, role: str) -> None:
         """Restart a service after it becomes unhealthy.
 
         Global restart (full Controller re-initialization from zero) is triggered when:
@@ -1491,17 +1544,8 @@ class Controller:
         register_extra_roles(self.config, algo)
         cls = algo.get(role)
         if cls is None:
-            logger.warning(f"No class registered for role '{role}', skipping")
-            return
+            raise RuntimeError(f"No class registered for role '{role}' during recovery")
 
-        # Serialize restart generations. HealthChecker can invoke this callback
-        # repeatedly for several unhealthy roles from one status snapshot; the
-        # training thread must consume the previous generation first.
-        self._restart_consumed_event.wait()
-        self._restart_consumed_event.clear()
-        self._restarting = True
-        self._restart_done_event.clear()
-        self._restart_error = None
         restart_count = self._health_manager.increment_restart_count(role)
         logger.info(f"Restarting {role}, restart count: {restart_count}")
 
@@ -1529,38 +1573,14 @@ class Controller:
                 else f"restart_count({restart_count}) >= 3 for '{role}'"
             )
             logger.warning(f"Triggering global restart due to: {reason}")
-            self._global_restart()
+            self._run_global_restart()
             # _restarting is reset by the main thread after it processes the restart_done_event
         else:
             # Delegate in-place restart to Service (reuses PG, restores step, syncs weights, re-runs task)
             service = self.serve_dict[role]
-            try:
-                service.restart()
-                self._health_manager.mark_healthy(role)
-                logger.info(f"Service '{role}' restarted successfully")
-            except BaseException as e:
-                self._restart_error = e
-                logger.exception(f"Service '{role}' restart failed: {e}")
-            finally:
-                self._restart_done_event.set()
-
-    def _global_restart(self) -> None:
-        """Run a global restart and always release the waiting main thread."""
-        restart_done_event = self._restart_done_event
-        try:
-            self._run_global_restart()
-        except BaseException as e:
-            self._restart_error = e
-            logger.exception(f"[Global Restart] Unhandled restart failure: {e}")
-            # A failure before _run_global_restart reaches its normal cancel
-            # phase must still interrupt the training thread so it can consume
-            # this cycle's error and release the restart-generation handshake.
-            try:
-                self._cancel_pending_tasks()
-            except BaseException as cancel_error:
-                logger.warning(f"[Global Restart] Failed to cancel pending tasks after error: {cancel_error}")
-        finally:
-            restart_done_event.set()
+            service.restart()
+            self._health_manager.mark_healthy(role)
+            logger.info(f"Service '{role}' restarted successfully")
 
     def _run_global_restart(self) -> None:
         """Perform a full global restart by re-initializing the Controller from

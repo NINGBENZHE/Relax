@@ -31,7 +31,10 @@ from relax.utils.device import device_module  # noqa
 
 
 try:
-    import deep_ep
+    try:
+        import _relax_hybrid_ep as deep_ep
+    except ImportError:
+        import deep_ep
     from torch_memory_saver import torch_memory_saver
 
     old_init = deep_ep.Buffer.__init__
@@ -78,4 +81,13 @@ except ImportError:
 
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
-from . import megatron_patch  # noqa: F401, E402
+# Keep legacy images usable until the static MCore dispatch lands.
+from relax.models.common.chunked_mtp_compat import install_chunked_mtp_compat  # noqa: E402
+
+
+install_chunked_mtp_compat()
+
+from relax.models.common.chunked_grad_coalesce_compat import install_chunked_grad_coalesce  # noqa: E402
+
+
+install_chunked_grad_coalesce()

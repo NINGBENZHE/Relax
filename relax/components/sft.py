@@ -168,6 +168,7 @@ def _create_sft_train_dataset(
     if dataset_cls is None:
         return SFTStreamingDataset(
             path=config.prompt_data,
+            line_offsets_cache=getattr(config, "_sft_line_offsets_cache", None),
             tokenizer=tokenizer,
             processor_pool=processor_pool,
             capacity=capacity,
@@ -572,6 +573,7 @@ class SFT(Base):
         self._processor_pool: ProcessorPool | None = None
         self._stop_event = asyncio.Event()
         self._run_task: asyncio.Task | None = None
+        self._init_task: asyncio.Task | None = None
 
     def _should_use_remote_batch_producer(self) -> bool:
         num_shards = sft_tq_num_shards(self.config)
@@ -1220,10 +1222,15 @@ class SFT(Base):
                 return
 
     async def run(self) -> None:
-        if self._run_task is not None:
+        if self._run_task is not None or self._stop_event.is_set():
             return
-        self._init_data_pipeline()
-        self._run_task = asyncio.create_task(self._async_run())
+        if self._init_task is None:
+            self._init_task = asyncio.create_task(asyncio.to_thread(self._init_data_pipeline))
+        # Requests may overlap or be cancelled while the initialization thread
+        # is still running. Share its outcome and keep ownership until stop().
+        await asyncio.shield(self._init_task)
+        if self._run_task is None and not self._stop_event.is_set():
+            self._run_task = asyncio.create_task(self._async_run())
 
     async def _async_run(self) -> None:
         try:
@@ -1242,6 +1249,11 @@ class SFT(Base):
 
     async def stop(self) -> None:
         self._stop_event.set()
+        if self._init_task is not None:
+            try:
+                await asyncio.shield(self._init_task)
+            except Exception as exc:
+                self._logger.warning(f"SFT initialization failed before shutdown: {exc}")
         for producer in getattr(self, "_batch_producers", []):
             try:
                 await _ray_get_many_async([producer.stop.remote()])
