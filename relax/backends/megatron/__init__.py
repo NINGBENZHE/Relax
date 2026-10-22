@@ -80,14 +80,3 @@ except ImportError:
     pass
 
 logging.getLogger("megatron").setLevel(logging.WARNING)
-
-# Keep legacy images usable until the static MCore dispatch lands.
-from relax.models.common.chunked_mtp_compat import install_chunked_mtp_compat  # noqa: E402
-
-
-install_chunked_mtp_compat()
-
-from relax.models.common.chunked_grad_coalesce_compat import install_chunked_grad_coalesce  # noqa: E402
-
-
-install_chunked_grad_coalesce()
