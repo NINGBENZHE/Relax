@@ -159,6 +159,7 @@ def build_environment() -> dict[str, str]:
         "NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME",
         "CLEARML_OFFLINE_MODE",
         "CLEARML_CACHE_DIR",
+        "RELAX_SKIP_NONFINITE_GRAD",
     ):
         if key in os.environ:
             env[key] = os.environ[key]

@@ -1,6 +1,8 @@
 # Copyright (c) 2026 Relax Authors. All Rights Reserved.
 """Keep a pre-update finite check while testing bucket-check overhead."""
 
+from relax.utils.training.nonfinite_grad import NonFiniteGradientNormError
+
 
 def finite_norm(value: object) -> float:
     import math
@@ -10,7 +12,7 @@ def finite_norm(value: object) -> float:
     # Replace the existing per-child threshold readbacks with one host value.
     result = value.item() if isinstance(value, torch.Tensor) else float(value)
     if not math.isfinite(result):
-        raise FloatingPointError("Non-finite global gradient norm before optimizer update")
+        raise NonFiniteGradientNormError("Non-finite global gradient norm before optimizer update")
     return result
 
 

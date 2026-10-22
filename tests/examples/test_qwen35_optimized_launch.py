@@ -70,3 +70,32 @@ def test_optimized_shell_preserves_worker_environment_and_argument_overrides():
     assert output["runtime_env"]["pip"] == ["example-package"]
     assert output["runtime_env"]["env_vars"]["CUSTOM_WORKER_KEY"] == "preserved"
     assert "NCCL_ALGO" not in output["runtime_env"]["env_vars"]
+
+
+def test_multimodal_recipe_separates_preprocessing_and_training_threads():
+    environment = dict(os.environ, MODEL_DIR="/model", DATA_DIR="/data", SAVE_DIR="/checkpoints", DRY_RUN="1")
+    script = ROOT / "scripts/training/sft/run-qwen35-optimized-64xB300.sh"
+    output = json.loads(
+        subprocess.check_output(
+            ["bash", str(script), "--multimodal", "--num-rollout", "15"], env=environment, text=True
+        )
+    )
+    argv = output["argv"]
+    assert "--multimodal" not in argv
+    assert argv[-2:] == ["--num-rollout", "15"]
+    values = {arg: argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg.startswith("--")}
+    assert json.loads(values["--multimodal-keys"]) == {"image": "images"}
+    assert values["--image-max-token-num"] == "16384"
+    assert values["--sft-invalid-multimodal-strategy"] == "error"
+    assert values["--sft-max-in-flight-steps"] == "3"
+    assert values["--sft-prefetch-buffer-size"] == "2048"
+    assert values["--sft-prefetch-num-workers"] == "96"
+    runtime = output["runtime_env"]["env_vars"]
+    train = json.loads(values["--train-env-vars"])
+    assert runtime["RELAX_PROCESSOR_POOL_SIZE"] == "96"
+    for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+        assert runtime[key] == "1"
+        assert train[key] == "24"
+        assert key in runtime["RELAX_PROPAGATE_ENV_VARS"].split(",")
+    assert train["RELAX_DISABLE_VISION_BRANCH_SYNC"] == "0"
+    assert train["RELAX_LOGPROB_FAST_PATH"] == "0"
