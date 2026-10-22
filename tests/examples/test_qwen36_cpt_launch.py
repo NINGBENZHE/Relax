@@ -204,3 +204,18 @@ def test_cpt_preflight_excludes_parent_but_rejects_other_active_jobs(monkeypatch
     jobs.append({"submission_id": "other", "status": "RUNNING", "entrypoint": "python train.py"})
     with pytest.raises(RuntimeError, match="other"):
         exec(code, {})
+
+
+@pytest.mark.parametrize("value", [None, "0", "1"])
+def test_cpt_launch_preserves_explicit_nonfinite_policy(monkeypatch, value):
+    monkeypatch.delenv("RELAX_SKIP_NONFINITE_GRAD", raising=False)
+    monkeypatch.delenv("RUNTIME_ENV_JSON", raising=False)
+    output = render(**({"RELAX_SKIP_NONFINITE_GRAD": value} if value is not None else {}))
+    argv = output["argv"]
+    driver = output["runtime_env"]["env_vars"]
+    worker = json.loads(argv[argv.index("--train-env-vars") + 1])
+    for env in (driver, worker):
+        if value is None:
+            assert "RELAX_SKIP_NONFINITE_GRAD" not in env
+        else:
+            assert env["RELAX_SKIP_NONFINITE_GRAD"] == value

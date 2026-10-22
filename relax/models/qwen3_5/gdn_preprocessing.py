@@ -33,8 +33,8 @@ def pre(
         cache = (cu_seqlens_q, cpu_cu, chunks)
         packed_seq_params._qwen_fullpre_metadata = cache
     q, k, v, z, beta_raw, alpha_raw = _FullPre.apply(qkvzba, self.conv1d.weight, self.A_log, self.dt_bias, *cache)
-    g, beta = self._compute_g_and_beta(self.A_log, self.dt_bias, alpha_raw, beta_raw)
-    return q, k, v, z, beta, g
+    g, gates = self._compute_gates(self.A_log, self.dt_bias, batch, seq_len, beta_raw, alpha_raw)
+    return q, k, v, z, gates["beta"], g
 
 
 def install(model):

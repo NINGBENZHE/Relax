@@ -47,6 +47,11 @@ from relax.utils.memory_utils import available_memory, clear_memory, log_step_pe
 from relax.utils.opd.opd_utils import consume_opd_train_data
 from relax.utils.replay import capture_hooks
 from relax.utils.timer import timer
+from relax.utils.training.nonfinite_grad import (
+    NonFiniteGradientNormError,
+    configure_nonfinite_guard,
+    install_nonfinite_guard,
+)
 from relax.utils.training.packing_metrics import PackingMetrics
 from relax.utils.training.ppo_utils import (
     install_critic_value_head_runtime_check,
@@ -544,6 +549,7 @@ def setup_model_and_optimizer(
     """
     assert not args.moe_use_upcycling
     assert args.load is not None or args.pretrained_checkpoint is not None
+    skip_nonfinite = configure_nonfinite_guard(args)
 
     model = get_model(
         wrap_model_provider_with_freeze(get_model_provider_func(args, role), args),
@@ -600,6 +606,8 @@ def setup_model_and_optimizer(
         config_overrides=_build_optimizer_config_overrides(args, config),
         use_gloo_process_groups=args.use_gloo_process_groups,
     )
+    if skip_nonfinite:
+        install_nonfinite_guard(optimizer, model, process_group=torch.distributed.group.WORLD)
     opt_param_scheduler = get_optimizer_param_scheduler(args, optimizer)
     return model, optimizer, opt_param_scheduler
 
@@ -1523,6 +1531,7 @@ def train_one_step(
         device_module.empty_cache()
         logger.info("Optimizer cache release: before=%s after=%s", memory_before, available_memory())
     valid_step = True
+    skipped_nonfinite_grad = False
     if _is_global_zero_token_step(losses_reduced):
         # No effective loss tokens anywhere in the global batch. Gradients are
         # exactly zero (the loss is zero-connected), so skip both the parameter
@@ -1539,7 +1548,29 @@ def train_one_step(
         grad_norm = 0.0
         num_zeros_in_grad = None
     else:
-        update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
+        try:
+            update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
+        except NonFiniteGradientNormError as exc:
+            # Only the synchronized pre-update norm guard can take this path: it runs before
+            # clipping or *any* child optimizer update. Do not swallow unrelated
+            # optimizer/CUDA exceptions, which may occur after partial updates.
+            if not getattr(optimizer, "_relax_nonfinite_guard_installed", False):
+                raise
+            update_successful, grad_norm, num_zeros_in_grad = False, float("nan"), None
+            skipped_nonfinite_grad = True
+            valid_step = False
+            optimizer._relax_nonfinite_skip_count = getattr(optimizer, "_relax_nonfinite_skip_count", 0) + 1
+            logger.error(
+                "!!! NONFINITE_GRAD_STEP_SKIPPED !!! NaN/Inf detected BEFORE optimizer update "
+                "(rollout_id=%d, step_id=%d, skipped_in_process=%d): %s. "
+                "PARAMETERS/ADAM/LR/WD NOT UPDATED. Clearing gradients; discarding this batch; "
+                "TRAINING CONTINUES. This is an error workaround, NOT a successful update or a root-cause fix.",
+                rollout_id,
+                step_id,
+                optimizer._relax_nonfinite_skip_count,
+                exc,
+                exc_info=True,
+            )
 
         if not getattr(args, "check_for_nan_in_loss_and_grad", True):
             # fp16 with dynamic loss scaling auto-disables this flag (see Megatron arguments.py).
@@ -1612,6 +1643,9 @@ def train_one_step(
         # Per-token and sequence-classification metrics use the all-reduced
         # effective count. RL sample-mean metrics use the step's logical GBS.
         loss_reduced.update(normalize_reduced_loss_metrics(keys, [num_samples_or_tokens, *values[1:]]))
+        if getattr(optimizer, "_relax_nonfinite_guard_installed", False):
+            loss_reduced["skipped_nonfinite_grad"] = int(skipped_nonfinite_grad)
+            loss_reduced["nonfinite_skips_in_process"] = getattr(optimizer, "_relax_nonfinite_skip_count", 0)
         if "rm/_score_chosen_second_moment" in loss_reduced:
             chosen_second = loss_reduced.pop("rm/_score_chosen_second_moment")
             rejected_second = loss_reduced.pop("rm/_score_rejected_second_moment")

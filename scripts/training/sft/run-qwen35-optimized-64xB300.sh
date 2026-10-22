@@ -3,6 +3,7 @@
 # Qwen3.5 optimized TP4/CP1/PP1/EP8/ETP1 SFT on 64 B300 GPUs.
 # MODEL_DIR points to the HF model, DATA_DIR to the input data, SAVE_DIR to checkpoints.
 # DRY_RUN=1 renders the command and worker environment without submitting a job.
+# --multimodal enables the image preprocessing pool and multimodal recipe.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,6 +22,16 @@ if [[ "${DRY_RUN:-0}" != 1 && -z "${RELAX_ENTRYPOINT_MODE:-}" ]]; then
 fi
 source "${MODEL_CONFIG_DIR:-$RELAX/scripts/models}/qwen35-35B-A3B.sh"
 
+MULTIMODAL=0
+EXTRA_ARGS=()
+for arg in "$@"; do
+    if [[ "$arg" == --multimodal ]]; then
+        MULTIMODAL=1
+    else
+        EXTRA_ARGS+=("$arg")
+    fi
+done
+
 PROJECT_NAME="${PROJECT_NAME:-Relax/sft/qwen35_optimized}"
 EXP_NAME="${EXP_NAME:-qwen35-optimized-64xB300}"
 now="$(date +%Y%m%d-%H%M%S)"
@@ -29,10 +40,11 @@ SUBMISSION_ID="${SUBMISSION_ID:-$TASK_NAME}"
 CHECKPOINT_DIR="${SAVE_DIR}/${EXP_NAME}"
 TRAIN_STEPS="${TRAIN_STEPS:-200}"
 
-# Serialize the same native-library environment for the Ray driver and actors.
-ENV_JSON="$(python3 - <<'PYENV'
+# Share native libraries while keeping preprocessing and training thread limits separate.
+ENV_JSON="$(python3 - "$MULTIMODAL" <<'PYENV'
 import json
 import os
+import sys
 from pathlib import Path
 
 def build_environment() -> dict[str, str]:
@@ -131,8 +143,24 @@ if os.environ.get("DRY_RUN") != "1":
     mode = os.environ.get("RELAX_FLA_CONV_NB_MODE", "original")
     assert mode == "none" or (mode == "auto" and os.environ.get("RELAX_GPU_ARCH") == "b300")
 env = build_environment()
+multimodal = sys.argv[1] == "1"
+if multimodal:
+    env.update({"RELAX_DISABLE_VISION_BRANCH_SYNC": "0", "RELAX_LOGPROB_FAST_PATH": "0"})
 runtime = json.loads(os.environ.get("RUNTIME_ENV_JSON") or "{}")
 runtime.setdefault("env_vars", {}).update(env)
+if multimodal:
+    preprocessing = {
+        "RELAX_PROCESSOR_POOL_SIZE": "96",
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1",
+        "TOKENIZERS_PARALLELISM": "false",
+    }
+    runtime["env_vars"].update(preprocessing)
+    propagate = runtime["env_vars"].get("RELAX_PROPAGATE_ENV_VARS", "").split(",")
+    runtime["env_vars"]["RELAX_PROPAGATE_ENV_VARS"] = ",".join(
+        dict.fromkeys([name for name in propagate if name] + list(preprocessing))
+    )
 for key in ("NCCL_PROTO", "NCCL_ALGO"):
     runtime["env_vars"].pop(key, None)
 print(json.dumps(env))
@@ -181,6 +209,18 @@ SFT_ARGS=(
     --tool-key tools
     --sft-invalid-multimodal-strategy skip
 )
+
+if [[ "$MULTIMODAL" == 1 ]]; then
+    SFT_ARGS+=(
+        --multimodal-keys '{"image":"images"}'
+        --image-max-token-num 16384
+        --image-min-token-num 64
+        --sft-invalid-multimodal-strategy error
+        --sft-max-in-flight-steps 3
+        --sft-prefetch-buffer-size 2048
+        --sft-prefetch-num-workers 96
+    )
+fi
 
 MTP_ARGS=(
     --mtp-num-layers 1
@@ -270,7 +310,7 @@ TRAIN_ARGS=(
     python3 -m relax.entrypoints.train
     "${MODEL_ARGS[@]}" "${CKPT_ARGS[@]}" "${SFT_ARGS[@]}" "${MTP_ARGS[@]}"
     "${OPTIMIZER_ARGS[@]}" "${PERF_ARGS[@]}" "${MONITOR_ARGS[@]}" "${MISC_ARGS[@]}"
-    "$@"
+    "${EXTRA_ARGS[@]}"
 )
 if [[ "${DRY_RUN:-0}" == 1 ]]; then
     python3 - "$RUNTIME_ENV_JSON" "${TRAIN_ARGS[@]}" <<'PYRENDER'
