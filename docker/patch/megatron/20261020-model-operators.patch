@@ -70,6 +70,21 @@ diff --git a/megatron/bridge/models/qwen_vl/modelling_qwen3_vl/rope.py b/megatro
  
  
  def _get_flat_packed_ranges(
+@@ -253,6 +262,14 @@
+     video_index: int,
+ ) -> tuple[torch.Tensor, int, int]:
+     """Build Qwen3-VL MRoPE positions for one logical sample."""
++    recipe = sys.modules.get("relax.models.qwen3_5.recipe")
++    if (
++        recipe is not None and recipe._TEXT_ONLY_CPT
++        and image_grid_thw is None and video_grid_thw is None
++    ):
++        # Literal vision markers in text-only CPT are ordinary text tokens.
++        positions = torch.arange(sample_input_ids.numel()).view(1, -1).expand(3, -1)
++        return positions, image_index, video_index
+     vision_start_indices = torch.argwhere(sample_input_ids == vision_start_token_id).squeeze(1)
+     vision_tokens = sample_input_ids[vision_start_indices + 1]
+     image_nums = int((vision_tokens == image_token_id).sum().item())
 diff --git a/megatron/bridge/models/qwen_vl/modelling_qwen3_vl/transformer_block.py b/megatron/bridge/models/qwen_vl/modelling_qwen3_vl/transformer_block.py
 --- a/megatron/bridge/models/qwen_vl/modelling_qwen3_vl/transformer_block.py
 +++ b/megatron/bridge/models/qwen_vl/modelling_qwen3_vl/transformer_block.py
