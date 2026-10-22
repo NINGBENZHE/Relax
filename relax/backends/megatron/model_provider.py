@@ -276,6 +276,15 @@ def get_model_provider_func(
     args: argparse.Namespace,
     role: Literal["actor", "critic"] = "actor",
 ):
+    from relax.models.qwen3_5.recipe import enabled as optimized_recipe
+
+    args._relax_qwen35_optimized = optimized_recipe(args)
+    if args._relax_qwen35_optimized:
+        assert not getattr(args, "sft_async_prepack", False), "Whole-pack recipe requires foreground packing"
+        from relax.models.qwen3_5.deepep_backend import ensure_backend
+
+        ensure_backend(args)
+
     # Support custom model provider path (similar to --custom-rm-path for reward models)
     if getattr(args, "custom_model_provider_path", None):
 
@@ -357,6 +366,9 @@ def get_model_provider_func(
             "distribute_saved_activations",
             "moe_router_load_balancing_type",
             "moe_router_dtype",
+            "moe_router_fusion",
+            "overlap_dispatch_backward_with_experts_wgrad",
+            "_relax_qwen35_optimized",
             "moe_aux_loss_coeff",
             "moe_token_dispatcher_type",
             "moe_shared_expert_overlap",
