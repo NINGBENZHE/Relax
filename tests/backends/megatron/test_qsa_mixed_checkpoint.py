@@ -92,8 +92,8 @@ def test_mixed_bounds_survive_checkpoint_forward_and_replay(checkpoint_modules, 
     )
     monkeypatch.setitem(
         sys.modules,
-        "relax.models.qwen3_8.qsa_community",
-        SimpleNamespace(_tilelang_routes=lambda selection, batch, length: torch.full((batch, length, 3), -1)),
+        MIXED + ".routes",
+        SimpleNamespace(token_routes=lambda selection, batch, length: torch.full((batch, length, 3), -1)),
     )
 
     def sparse(q, k, v, selected, is_thd):

@@ -175,9 +175,9 @@ def inputs(lengths):
 
 
 def expanded(selection):
-    from relax.models.qwen3_8.qsa_community import _tilelang_routes
+    from relax.models.qwen3_8.ops.qsa_mixed_ops.routes import token_routes
 
-    result = torch.nn.functional.pad(_tilelang_routes(selection, 1, selection.positions.shape[1])[0], (0, 1), value=-1)
+    result = torch.nn.functional.pad(token_routes(selection, 1, selection.positions.shape[1])[0], (0, 1), value=-1)
     result._qsa_bounds = selection._relax_qsa_mixed_bounds
     return result
 

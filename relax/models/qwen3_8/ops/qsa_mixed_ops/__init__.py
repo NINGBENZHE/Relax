@@ -21,7 +21,7 @@ def attention_for_selection(
     """Preserve native selected blocks, expanding the causal tail exactly
     once."""
     from relax.models.qwen3_8.ops.qsa_mixed_ops.mixed import attention
-    from relax.models.qwen3_8.qsa_community import _tilelang_routes
+    from relax.models.qwen3_8.ops.qsa_mixed_ops.routes import token_routes
 
     batch, length, heads, width = query.shape
     if width != 256 or heads != 12 or key.shape[2:] != (1, 256):
@@ -32,8 +32,8 @@ def attention_for_selection(
     if bounds is None or bounds[0] != 0 or bounds[-1] != length:
         raise ValueError("Mixed packed QSA requires producer CPU document boundaries")
     # The source defines budget=width-4 and reads each selected block at stride 4.
-    # _tilelang_routes has three possible tail tokens; reserve the fourth column.
-    indices = torch.nn.functional.pad(_tilelang_routes(selection, batch, length), (0, 1), value=-1)
+    # token_routes has three possible tail tokens; reserve the fourth column.
+    indices = torch.nn.functional.pad(token_routes(selection, batch, length), (0, 1), value=-1)
     outputs = []
     for row in range(batch):
         selected = indices[row].contiguous()
