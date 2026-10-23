@@ -201,3 +201,9 @@ def linear_cross_entropy(
     result = _LinearCE.apply(hidden, weight, labels, tp_group, 1.0 / temperature, accumulate, return_logits)
     _log_enabled(return_logits)
     return result
+
+
+if Envs.RELAX_SFT_FUSED_LINEAR_CE:
+    from .megatron_patch.fused_linear_cross_entropy_patch import install as install_linear_cross_entropy
+
+    install_linear_cross_entropy()
