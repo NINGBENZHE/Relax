@@ -83,6 +83,7 @@ def _metrics(got: torch.Tensor, expected: torch.Tensor) -> dict[str, float]:
 
 def _run_case(lengths: tuple[int, ...], budget: int) -> None:
     from relax.models.qwen3_8 import qsa_community as patch
+    from relax.models.qwen3_8.ops.qsa_mixed_ops.routes import token_routes
 
     torch.manual_seed(20261013)
     selection = _routes(lengths, budget)
@@ -94,7 +95,7 @@ def _run_case(lengths: tuple[int, ...], budget: int) -> None:
         SimpleNamespace(softmax_scale=256**-0.5), *actual_inputs, selection, True
     ).reshape_as(values[0])
     gradients = torch.autograd.grad(actual, actual_inputs, upstream)
-    indices = torch.nn.functional.pad(patch._tilelang_routes(selection, 1, length)[0], (0, 1), value=-1)
+    indices = torch.nn.functional.pad(token_routes(selection, 1, length)[0], (0, 1), value=-1)
     bases = torch.cat(
         [
             torch.full((n,), base, device="cuda", dtype=torch.int32)
