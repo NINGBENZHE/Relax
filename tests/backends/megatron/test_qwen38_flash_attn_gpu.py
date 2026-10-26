@@ -1,6 +1,9 @@
 # Copyright (c) 2026 Relax Authors. All Rights Reserved.
 
+import json
 import os
+import subprocess
+import sys
 
 import pytest
 import torch
@@ -11,7 +14,7 @@ import torch.nn.functional as F
 @pytest.mark.parametrize(
     "backend",
     [
-        "te",
+        "te-flash",
         pytest.param(
             "fa4",
             marks=pytest.mark.skipif(
@@ -27,6 +30,46 @@ import torch.nn.functional as F
     ids=["vision-head72", "vision-head72-explicit-scale", "language-cp1-head256-gqa"],
 )
 def test_qwen38_flash_attn_packed_forward_backward(
+    backend: str, head_dim: int, query_heads: int, kv_heads: int, causal: bool, softmax_scale: float | None
+) -> None:
+    arguments = dict(
+        backend=backend,
+        head_dim=head_dim,
+        query_heads=query_heads,
+        kv_heads=kv_heads,
+        causal=causal,
+        softmax_scale=softmax_scale,
+    )
+    if backend == "te-flash":
+        # Match the launchers' --attention-backend flash before TE imports or caches a backend.
+        environment = {
+            **os.environ,
+            "NVTE_FLASH_ATTN": "1",
+            "NVTE_FUSED_ATTN": "0",
+            "NVTE_UNFUSED_ATTN": "0",
+            "NVTE_DEBUG": "1",
+            "NVTE_DEBUG_LEVEL": "2",
+        }
+        code = """import json
+import runpy
+import sys
+
+check = runpy.run_path(sys.argv[1])["_assert_packed_attention_forward_backward"]
+check(**json.loads(sys.argv[2]))
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", code, __file__, json.dumps(arguments)],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+    else:
+        _assert_packed_attention_forward_backward(**arguments)
+
+
+def _assert_packed_attention_forward_backward(
     backend: str, head_dim: int, query_heads: int, kv_heads: int, causal: bool, softmax_scale: float | None
 ) -> None:
     if backend == "fa4":
@@ -62,7 +105,7 @@ def test_qwen38_flash_attn_packed_forward_backward(
             softmax_scale=softmax_scale,
         )
     else:
-        # Qwen3.8's default dense core uses TE dispatch in the CUDA 12 image.
+        # TE dispatch is restricted to FlashAttention by the launch configuration.
         attention = DotProductAttention(
             num_attention_heads=query_heads,
             kv_channels=head_dim,
