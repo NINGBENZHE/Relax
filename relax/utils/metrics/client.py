@@ -236,9 +236,12 @@ class MetricsClient:
             True if successful, False otherwise
         """
         try:
+            # Nonfinite scalars sanitize to null, which the service rejects.
+            # Keep valid metrics (including skip counters) in the same batch.
+            sanitized = {name: value for name, value in _sanitize_for_json(metrics).items() if value is not None}
             response = requests.post(
                 f"{self.service_url}/log_metrics_batch",
-                json={"step": step, "metrics": _sanitize_for_json(metrics), "tags": tags},
+                json={"step": step, "metrics": sanitized, "tags": tags},
                 timeout=5,
             )
             if response.status_code != 200:
