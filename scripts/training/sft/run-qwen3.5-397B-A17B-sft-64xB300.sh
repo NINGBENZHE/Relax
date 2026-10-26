@@ -46,6 +46,8 @@ if [[ -z "${RELAX_ENTRYPOINT_MODE:-}" && "${DRY_RUN:-0}" != 1 ]]; then
   source "$RELAX_ROOT/scripts/entrypoint/ray-job.sh"
 fi
 source "$RELAX_ROOT/scripts/models/qwen35-397B-A17B.sh"
+# Set RELAX_SKIP_NONFINITE_GRAD=0 for fail-fast diagnostics.
+export RELAX_SKIP_NONFINITE_GRAD="${RELAX_SKIP_NONFINITE_GRAD:-1}"
 CKPT_ARGS=(
   --resource "{\"sft\":[1,0],\"actor\":[1,64]}" --max-staleness 0 --num-data-storage-units 8
   --hf-checkpoint "${MODEL_DIR}/Qwen3.5-397B-A17B" --ref-load "${MODEL_DIR}/Qwen3.5-397B-A17B" --load "$SAVE_DIR/$EXP_NAME"
@@ -80,7 +82,7 @@ OPTIMIZER_ARGS=(
   --moe-router-load-balancing-type aux_loss --moe-aux-loss-coeff 1e-4 --moe-router-dtype fp32
   --seed 42 --attention-dropout 0.0 --hidden-dropout 0.0 --accumulate-allreduce-grads-in-fp32
   --attention-softmax-in-fp32 --attention-backend auto --use-health-check
-  --train-env-vars "{\"CUDA_DEVICE_MAX_CONNECTIONS\":\"32\"}"
+  --train-env-vars "{\"CUDA_DEVICE_MAX_CONNECTIONS\":\"32\",\"RELAX_SKIP_NONFINITE_GRAD\":\"$RELAX_SKIP_NONFINITE_GRAD\"}"
 )
 TRACKING_ARGS=(
   --use-clearml --use-metrics-service --tb-project-name "$PROJECT_NAME"
@@ -125,7 +127,7 @@ env.update({'CUDA_DEVICE_MAX_CONNECTIONS':'1','NCCL_NVLS_ENABLE':'0',
  'TORCH_DISTRIBUTED_DEFAULT_TIMEOUT':'3600','SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK':'256'})
 for key in ('RELAX_LOGPROB_CE_IMPL','RELAX_MTP_CE_IMPL','RELAX_LOGPROB_FAST_PATH','RELAX_DISABLE_VISION_BRANCH_SYNC',
  'TRITON_PTXAS_PATH','PYTORCH_ALLOC_CONF','NCCL_SOCKET_IFNAME','NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME',
- 'RELAX_SFT_DATA_NODE_IP','CUDA_HOME','CPATH','TORCHINDUCTOR_COMPILE_THREADS','TRITON_CACHE_DIR'):
+ 'RELAX_SFT_DATA_NODE_IP','CUDA_HOME','CPATH','TORCHINDUCTOR_COMPILE_THREADS','TRITON_CACHE_DIR','RELAX_SKIP_NONFINITE_GRAD'):
  if key in os.environ: env[key]=os.environ[key]
 print(json.dumps(runtime))
 PY
