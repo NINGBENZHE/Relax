@@ -29,7 +29,7 @@ def test_manifest_patch_hashes_use_files_copied_into_runtime_stage(tmp_path):
         words = shlex.split(line)
         if words[0] == "FROM":
             stage = words[-1]
-        if words[0] != "COPY" or stage not in {"relax_build", "relax_ep", "relax_b300"}:
+        if words[0] != "COPY" or stage not in {"relax_build", "relax_ep", "relax_blackwell"}:
             continue
         if words[1].startswith("--"):
             continue

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright (c) 2026 Relax Authors. All Rights Reserved.
-# Qwen3.6 raw-text CPT, 256K, TP4/CP1/PP1/EP8/ETP1, on 64 B300 GPUs.
+# Qwen3.6 raw-text CPT, 256K, TP4/CP1/PP1/EP8/ETP1, on 64 Blackwell GPUs.
 # MODEL_DIR points to the HF model, DATA_DIR to the input data, SAVE_DIR to checkpoints.
 # Requires the optimized runtime dependencies used by the Qwen3.5 image recipe.
 # Example: MODEL_DIR=/models/Qwen3.6 DATA_DIR=/data/train.jsonl SAVE_DIR=/checkpoints \
@@ -44,7 +44,7 @@ fi
 source "${MODEL_CONFIG_DIR:-$RELAX/scripts/models}/qwen36-35B-A3B.sh"
 
 PROJECT_NAME="${PROJECT_NAME:-Relax/cpt/qwen36_optimized}"
-EXP_NAME="${EXP_NAME:-qwen36-cpt-256k-64xB300}"
+EXP_NAME="${EXP_NAME:-qwen36-cpt-256k-64xB300}"  # gitleaks:allow -- stable experiment/checkpoint identity
 now="$(date +%Y%m%d-%H%M%S)"
 TASK_NAME="${EXP_NAME}-${now}-$$"
 export SUBMISSION_ID="${SUBMISSION_ID:-$TASK_NAME}"
@@ -172,7 +172,7 @@ if os.environ.get("DRY_RUN") != "1":
     manifest = json.loads(Path("/etc/relax-qwen35-runtime.json").read_text())
     assert manifest["packages"]["relax-deep-ep-v2"] == "2.1.0"
     mode = os.environ.get("RELAX_FLA_CONV_NB_MODE", "original")
-    assert mode == "none" or (mode == "auto" and os.environ.get("RELAX_GPU_ARCH") == "b300")
+    assert mode == "none" or (mode == "auto" and os.environ.get("RELAX_GPU_ARCH") == "b300")  # gitleaks:allow -- existing runtime environment compatibility key
 env = build_environment()
 runtime = json.loads(os.environ.get("RUNTIME_ENV_JSON") or "{}")
 runtime.setdefault("env_vars", {}).update(env)

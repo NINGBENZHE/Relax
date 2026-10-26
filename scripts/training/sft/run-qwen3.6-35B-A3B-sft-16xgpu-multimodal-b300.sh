@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Copyright (c) 2026 Relax Authors. All Rights Reserved.
-# Qwen3.6-35B-A3B multimodal SFT on 16 B300 GPUs; image-built runtime required.
+# Qwen3.6-35B-A3B multimodal SFT on 16 Blackwell GPUs; image-built runtime required.
 # Set MODEL_DIR, DATA_DIR and SAVE_DIR; RAY_ADDRESS is the Ray Jobs HTTP URL.
 # DRY_RUN=1 renders arguments and actor environment without submitting a job.
 # Checkpoints save/resume at SAVE_DIR/EXP_NAME every 50 steps, retaining five.
 # Unlike the archived acceptance wrapper, saving/resuming is enabled by default.
 # Change EXP_NAME for a new experiment. SAVE_CHECKPOINT=0 disables saving.
-# Supply overrides directly in the environment; no B300_CONFIG indirection.
+# Supply overrides directly in the environment; no external config indirection.
 # Launch this script directly with bash. If invoking ray-job.sh externally, set RELAX_SKIP_CLUSTER_CLEANUP=1 there too.
 # Example: export MODEL_DIR=/models DATA_DIR=/data SAVE_DIR=/checkpoints; then run with DRY_RUN=1.
 set -euo pipefail
@@ -35,7 +35,7 @@ if [[ "${MOE_FLEX_DISPATCHER_BACKEND:-hybridep}" != hybridep ]]; then
 fi
 MOE_FLEX_DISPATCHER_BACKEND=hybridep
 HF_CHECKPOINT="${HF_CHECKPOINT:-$MODEL_DIR/Qwen3.6-35B-A3B}"
-EXP_NAME="${EXP_NAME:-qwen36-35b-sft-multimodal-16xB300}"
+EXP_NAME="${EXP_NAME:-qwen36-35b-sft-multimodal-16xB300}"  # gitleaks:allow -- stable experiment/checkpoint identity
 RUN_TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 TRAIN_STEPS="${TRAIN_STEPS:-100}"
 [[ "$TRAIN_STEPS" =~ ^[1-9][0-9]*$ ]] || { echo 'TRAIN_STEPS must be positive' >&2; exit 2; }

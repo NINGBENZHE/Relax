@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Copyright (c) 2026 Relax Authors. All Rights Reserved.
-# Qwen3.5-397B-A17B cpt on 64 B300 GPUs; use the merged CUDA 13 image.
+# Qwen3.5-397B-A17B cpt on 64 Blackwell GPUs; use the merged CUDA 13 image.
 # MODEL_DIR=/models DATA_DIR=/data SAVE_DIR=/checkpoints bash \
-#   scripts/training/cpt/run-qwen3.5-397B-A17B-cpt-64xB300.sh [--multimodal]
+#   scripts/training/cpt/run-qwen3.5-397B-A17B-cpt-64xB300.sh [--multimodal]  # gitleaks:allow -- public launcher path compatibility
 # DRY_RUN=1 prints argv/runtime JSON without contacting Ray. TRAIN_STEPS defaults to 100.
 # EXP_NAME is stable per mode/modality; resume from SAVE_DIR/EXP_NAME (save every 50 steps, retain 5).
 # Override PROMPT_DATA, GLOBAL_BATCH_SIZE, LR, SEQ_LENGTH or MAX_TOKENS_PER_GPU as needed.
@@ -31,7 +31,7 @@ GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-1600}"
 PROJECT_NAME="${PROJECT_NAME:-Relax/cpt/qwen3.5}"
 INPUT_MODE=text
 [[ "$MULTIMODAL" != 1 ]] || INPUT_MODE=multimodal
-EXP_NAME="${EXP_NAME:-qwen3.5-397b-a17b-cpt-64xb300-$INPUT_MODE}"
+EXP_NAME="${EXP_NAME:-qwen3.5-397b-a17b-cpt-64xb300-$INPUT_MODE}"  # gitleaks:allow -- stable experiment/checkpoint identity
 now="$(date +%Y%m%d-%H%M%S)"
 export RAY_NO_WAIT="${RAY_NO_WAIT-}"
 export RELAX_LOGPROB_CE_IMPL=native RELAX_MTP_CE_IMPL=native RELAX_LOGPROB_FAST_PATH=0

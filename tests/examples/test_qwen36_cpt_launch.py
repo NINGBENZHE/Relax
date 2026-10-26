@@ -66,7 +66,8 @@ def test_cpt_launch_preserves_delivery_training_configuration():
         assert json.loads(argv[argv.index("--train-env-vars") + 1]) == env
         assert env["NVTE_BWD_LAYERNORM_SM_MARGIN"] == env["NVTE_FWD_LAYERNORM_SM_MARGIN"] == "20"
         assert env["EP_DISABLE_GIN"] == "1"
-        assert "B300_OPT_PREFIX" not in env and "RELAX_SFT_WHOLEPACK" not in env
+        assert "B300_OPT_PREFIX" not in env  # gitleaks:allow -- compatibility literal
+        assert "RELAX_SFT_WHOLEPACK" not in env
 
 
 def test_cpt_launch_preserves_overrides_paths_and_worker_environment(tmp_path):

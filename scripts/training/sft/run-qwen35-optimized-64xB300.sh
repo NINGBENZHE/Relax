@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright (c) 2026 Relax Authors. All Rights Reserved.
-# Qwen3.5 optimized TP4/CP1/PP1/EP8/ETP1 SFT on 64 B300 GPUs.
+# Qwen3.5 optimized TP4/CP1/PP1/EP8/ETP1 SFT on 64 Blackwell GPUs.
 # MODEL_DIR points to the HF model, DATA_DIR to the input data, SAVE_DIR to checkpoints.
 # DRY_RUN=1 renders the command and worker environment without submitting a job.
 # --multimodal enables the image preprocessing pool and multimodal recipe.
@@ -34,7 +34,7 @@ for arg in "$@"; do
 done
 
 PROJECT_NAME="${PROJECT_NAME:-Relax/sft/qwen35_optimized}"
-EXP_NAME="${EXP_NAME:-qwen35-optimized-64xB300}"
+EXP_NAME="${EXP_NAME:-qwen35-optimized-64xB300}"  # gitleaks:allow -- stable experiment/checkpoint identity
 now="$(date +%Y%m%d-%H%M%S)"
 TASK_NAME="${EXP_NAME}-${now}-$$"
 SUBMISSION_ID="${SUBMISSION_ID:-$TASK_NAME}"
@@ -143,7 +143,7 @@ if os.environ.get("DRY_RUN") != "1":
     manifest = json.loads(Path("/etc/relax-qwen35-runtime.json").read_text())
     assert manifest["packages"]["relax-deep-ep-v2"] == "2.1.0"
     mode = os.environ.get("RELAX_FLA_CONV_NB_MODE", "original")
-    assert mode == "none" or (mode == "auto" and os.environ.get("RELAX_GPU_ARCH") == "b300")
+    assert mode == "none" or (mode == "auto" and os.environ.get("RELAX_GPU_ARCH") == "b300")  # gitleaks:allow -- existing runtime environment compatibility key
 env = build_environment()
 multimodal = sys.argv[1] == "1"
 if multimodal:

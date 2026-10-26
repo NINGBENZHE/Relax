@@ -11,9 +11,16 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MM16 = ROOT / "scripts/training/sft/run-qwen3.6-35B-A3B-sft-16xgpu-multimodal-b300.sh"
-SFT64 = ROOT / "scripts/training/sft/run-qwen3.5-397B-A17B-sft-64xB300.sh"
-CPT64 = ROOT / "scripts/training/cpt/run-qwen3.5-397B-A17B-cpt-64xB300.sh"
+MM16 = (
+    ROOT
+    / "scripts/training/sft/run-qwen3.6-35B-A3B-sft-16xgpu-multimodal-b300.sh"  # gitleaks:allow -- compatibility literal
+)
+SFT64 = (
+    ROOT / "scripts/training/sft/run-qwen3.5-397B-A17B-sft-64xB300.sh"  # gitleaks:allow -- compatibility literal
+)
+CPT64 = (
+    ROOT / "scripts/training/cpt/run-qwen3.5-397B-A17B-cpt-64xB300.sh"  # gitleaks:allow -- compatibility literal
+)
 ENTRIES = [MM16, SFT64, CPT64]
 
 
@@ -21,7 +28,9 @@ def run_entry(entry, *arguments, **overrides):
     env = {
         key: value
         for key, value in os.environ.items()
-        if not key.startswith(("B300_", "TRAIN_", "RELAX_", "MOE_", "SFT_"))
+        if not key.startswith(
+            ("B300_", "TRAIN_", "RELAX_", "MOE_", "SFT_")  # gitleaks:allow -- compatibility literal
+        )
     }
     for key in ("MULTIMODAL_KEYS", "CONVERSATION_KEY_MAP", "SAVE_CHECKPOINT", "LOAD_DIR", "HF_CHECKPOINT"):
         env.pop(key, None)

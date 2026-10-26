@@ -19,7 +19,9 @@ def test_optimized_launcher_uses_stable_checkpoints_and_image_dependencies():
         EXP_NAME="cpu-validation",
         DRY_RUN="1",
     )
-    script = ROOT / "scripts/training/sft/run-qwen35-optimized-64xB300.sh"
+    script = (
+        ROOT / "scripts/training/sft/run-qwen35-optimized-64xB300.sh"  # gitleaks:allow -- compatibility literal
+    )
     subprocess.run(["bash", "-n", str(script)], check=True)
     outputs = [
         json.loads(subprocess.check_output(["bash", str(script)], env=environment, text=True)) for _ in range(2)
@@ -33,7 +35,7 @@ def test_optimized_launcher_uses_stable_checkpoints_and_image_dependencies():
         assert argv[argv.index("--max-tokens-per-gpu") + 1] == "262144"
         worker_env = output["runtime_env"]["env_vars"]
         assert json.loads(argv[argv.index("--train-env-vars") + 1]) == worker_env
-        assert "B300_OPT_PREFIX" not in worker_env
+        assert "B300_OPT_PREFIX" not in worker_env  # gitleaks:allow -- existing runtime environment compatibility key
         assert "RELAX_SFT_WHOLEPACK" not in worker_env
         assert worker_env["EP_DISABLE_GIN"] == "1"
         assert worker_env["LD_PRELOAD"].startswith("/opt/relax/cublas13.3/nvidia/cu13/lib/libcublasLt.so.13:")
@@ -51,7 +53,9 @@ def test_optimized_shell_preserves_worker_environment_and_argument_overrides():
             {"env_vars": {"CUSTOM_WORKER_KEY": "preserved", "NCCL_ALGO": "Ring"}, "pip": ["example-package"]}
         ),
     )
-    script = ROOT / "scripts/training/sft/run-qwen35-optimized-64xB300.sh"
+    script = (
+        ROOT / "scripts/training/sft/run-qwen35-optimized-64xB300.sh"  # gitleaks:allow -- compatibility literal
+    )
     output = json.loads(
         subprocess.check_output(["bash", str(script), "--num-rollout", "3"], env=environment, text=True)
     )
@@ -74,7 +78,9 @@ def test_optimized_shell_preserves_worker_environment_and_argument_overrides():
 
 def test_multimodal_recipe_separates_preprocessing_and_training_threads():
     environment = dict(os.environ, MODEL_DIR="/model", DATA_DIR="/data", SAVE_DIR="/checkpoints", DRY_RUN="1")
-    script = ROOT / "scripts/training/sft/run-qwen35-optimized-64xB300.sh"
+    script = (
+        ROOT / "scripts/training/sft/run-qwen35-optimized-64xB300.sh"  # gitleaks:allow -- compatibility literal
+    )
     output = json.loads(
         subprocess.check_output(
             ["bash", str(script), "--multimodal", "--num-rollout", "15"], env=environment, text=True
