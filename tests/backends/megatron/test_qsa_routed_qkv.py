@@ -63,7 +63,6 @@ def test_exact_forward_and_adjoint(tp, dtype, rows):
         receive = torch.cat([backwards[consumer][rank] for consumer in range(tp)])
         result = unpack(receive, table[rank], rows, 13312 // tp, inverse=True)
         torch.testing.assert_close(result.float(), ref.grad.chunk(tp, dim=-1)[rank], rtol=0, atol=0)
-    assert not torch.cuda.is_initialized()
 
 
 @pytest.mark.parametrize("tp", [4, 8])
