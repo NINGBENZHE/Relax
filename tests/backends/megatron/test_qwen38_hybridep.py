@@ -15,11 +15,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[3]
-SCRIPT = (
-    ROOT
-    / "examples/models/qwen3.8-flash-next/scripts"
-    / "run-qwen38-qsa-sft-32xgpu-B300.sh"  # gitleaks:allow -- stable public launcher path
-)
+SCRIPT = ROOT / "examples/models/qwen3.8-flash-next/scripts/run-qwen38-qsa-sft-32xgpu-blackwell.sh"
 
 
 def load(name, path):

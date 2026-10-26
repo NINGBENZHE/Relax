@@ -39,7 +39,7 @@ def _value(argv: list[str], flag: str) -> str:
 @pytest.mark.parametrize(
     "script,gpus,tp,pp,ep",
     [
-        ("run-qwen38-qsa-sft-32xgpu-B300.sh", 32, 2, 4, 8),  # gitleaks:allow -- stable public launcher path
+        ("run-qwen38-qsa-sft-32xgpu-blackwell.sh", 32, 2, 4, 8),
         ("run-qwen38-flash-next-openr1mm-128xgpu.sh", 128, 8, 8, 16),
     ],
 )

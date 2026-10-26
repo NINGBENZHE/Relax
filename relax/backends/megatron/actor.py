@@ -784,13 +784,26 @@ class MegatronTrainRayActor(TrainRayActor):
     def _resident_sft_overlap_enabled(self) -> bool:
         if not resident_sft_param_overlap_enabled(self.args):
             return False
-        tags = set(self.weights_backuper.backup_tags) if hasattr(self, "weights_backuper") else set()
+        has_backuper = hasattr(self, "weights_backuper")
+        tags = set(self.weights_backuper.backup_tags) if has_backuper else set()
+        active_tag = getattr(self, "_active_model_tag", None)
+        snapshot_actor = active_tag == "actor" and tags == {"actor"}
+        live_actor = (
+            not has_backuper
+            and active_tag is None
+            and should_skip_sft_weight_management(
+                self.args,
+                with_ref=getattr(self, "with_ref", False),
+                with_opd_teacher=getattr(self, "with_opd_teacher", False),
+            )
+        )
         if (
             self.role != "actor"
             or self._per_step_rollout
             or getattr(self, "rollout_manager", None) is not None
-            or getattr(self, "_active_model_tag", None) != "actor"
-            or tags != {"actor"}
+            or getattr(self, "with_ref", False)
+            or getattr(self, "with_opd_teacher", False)
+            or not (snapshot_actor or live_actor)
         ):
             raise RuntimeError("Resident SFT overlap cannot coexist with rollout, reference/teacher or model swapping")
         self.args._relax_resident_sft_actor_verified = True
