@@ -6,6 +6,7 @@
 # Example: MODEL_DIR=/models/Qwen3.6 DATA_DIR=/data/train.jsonl SAVE_DIR=/checkpoints \
 #   bash scripts/training/cpt/run-qwen3.6-35B-A3B-cpt-256k-64xgpu.sh --dry-run
 # DRY_RUN=1 (or --dry-run) renders arguments and worker environment without submission.
+# Set RELAX_SKIP_NONFINITE_GRAD=0 for fail-fast diagnostics.
 set -euo pipefail
 if [[ "${1:-}" == --dry-run || "${1:-}" == --render-env ]]; then
     export DRY_RUN=1
@@ -163,6 +164,7 @@ def build_environment() -> dict[str, str]:
     ):
         if key in os.environ:
             env[key] = os.environ[key]
+    env["RELAX_SKIP_NONFINITE_GRAD"] = os.environ.get("RELAX_SKIP_NONFINITE_GRAD", "1")
     return env
 
 

@@ -215,7 +215,4 @@ def test_cpt_launch_preserves_explicit_nonfinite_policy(monkeypatch, value):
     driver = output["runtime_env"]["env_vars"]
     worker = json.loads(argv[argv.index("--train-env-vars") + 1])
     for env in (driver, worker):
-        if value is None:
-            assert "RELAX_SKIP_NONFINITE_GRAD" not in env
-        else:
-            assert env["RELAX_SKIP_NONFINITE_GRAD"] == value
+        assert env["RELAX_SKIP_NONFINITE_GRAD"] == ("1" if value is None else value)

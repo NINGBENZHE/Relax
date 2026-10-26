@@ -4,6 +4,7 @@
 # MODEL_DIR points to the HF model, DATA_DIR to the input data, SAVE_DIR to checkpoints.
 # DRY_RUN=1 renders the command and worker environment without submitting a job.
 # --multimodal enables the image preprocessing pool and multimodal recipe.
+# Set RELAX_SKIP_NONFINITE_GRAD=0 for fail-fast diagnostics.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -134,6 +135,7 @@ def build_environment() -> dict[str, str]:
     ):
         if key in os.environ:
             env[key] = os.environ[key]
+    env["RELAX_SKIP_NONFINITE_GRAD"] = os.environ.get("RELAX_SKIP_NONFINITE_GRAD", "1")
     return env
 
 
