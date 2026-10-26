@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright (c) 2026 Relax Authors. All Rights Reserved.
-# Qwen3.8: 4 nodes x 8 B300, TP2/PP4/DP4/CP1/EP8, one MTP layer.
+# Qwen3.8: 4 nodes x 8 Blackwell GPUs, TP2/PP4/DP4/CP1/EP8, one MTP layer.
 # Run this script directly; it delegates setup to scripts/entrypoint/ray-job.sh.
 # DRY_RUN=1 prints JSON without Ray setup, cleanup, network calls or GPU imports.
 # MODEL_DIR and DATA_DIR are the exact HF checkpoint and prompt-data paths.
@@ -20,9 +20,9 @@ source "${RELAX_ROOT}/scripts/models/qwen38-flash-next.sh"
 : "${MEGATRON:?Set MEGATRON to the compatible Megatron-LM checkout}"
 # Use the unified image's installed Bridge, Python dependencies and HybridEP.
 # Do not prepend the pre-refactor /opt/qwen38-flash-next runtime.
-: "${RELAX_HYBRID_EP_COMMIT:?Use the unified B300 image with HybridEP installed}"
+: "${RELAX_HYBRID_EP_COMMIT:?Use the unified Blackwell image with HybridEP installed}"
 export RAY_NO_WAIT="${RAY_NO_WAIT-}"
-export EXP_NAME="${EXP_NAME:-qwen38-qsa-32xb300}"
+export EXP_NAME="${EXP_NAME:-qwen38-qsa-32xb300}" # gitleaks:allow -- stable experiment/checkpoint identity
 export PROJECT_NAME="${PROJECT_NAME:-Relax/sft/qwen38-qsa}"
 now=$(date "+%Y%m%d-%H%M%S")
 export SUBMISSION_ID="${SUBMISSION_ID:-${EXP_NAME}-${now}-$$}"

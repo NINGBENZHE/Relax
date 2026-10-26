@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Relax Authors. All Rights Reserved.
 
-"""Exercise HC derived weights across reloads and real B300 graph replay."""
+"""Exercise HC derived weights across reloads and real SM103 graph replay."""
 
 import importlib.util
 import os

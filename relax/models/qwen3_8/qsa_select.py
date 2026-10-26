@@ -119,8 +119,8 @@ def select_blocks(
     # Causal visibility never exceeds that prefix, so invalid pooled-key tails
     # cannot be selected. block_valid is not an arbitrary attention/padding mask.
     selected = torch.empty((total, nbytes), dtype=torch.uint8, device=q.device)
-    # H800 and B300 use the same kernel; wider rows benefit from 16 warps
-    # on B300. Retain ATen beyond each measured limit and on other devices.
+    # SM90 and SM103 use the same kernel; wider rows benefit from 16 warps
+    # on SM103. Retain ATen beyond each measured limit and on other devices.
     capability = torch.cuda.get_device_capability(q.device)
     fused_topk_limit = 32768 if capability == (10, 3) else (16384 if capability == (9, 0) else 0)
     # The tile only allocates as many columns as the tile can see, so sizing it

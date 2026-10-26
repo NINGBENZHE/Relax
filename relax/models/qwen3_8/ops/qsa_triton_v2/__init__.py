@@ -32,7 +32,7 @@ _SM103_BF16_D256 = Config(dq=(64, 32, 8, 1))
 
 
 def _select_config(dim: int, capability: tuple[int, int], dtype: torch.dtype) -> Config:
-    # B300: D256 high/low dS accumulation needs 592 TMEM columns at BM128,
+    # SM103: D256 high/low dS accumulation needs 592 TMEM columns at BM128,
     # above the 512-column limit. BM64 was validated at 512 columns.
     if capability == (10, 3) and dim == 256 and dtype == torch.bfloat16:
         return _SM103_BF16_D256

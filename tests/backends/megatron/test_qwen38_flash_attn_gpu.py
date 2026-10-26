@@ -18,8 +18,8 @@ import torch.nn.functional as F
         pytest.param(
             "fa4",
             marks=pytest.mark.skipif(
-                os.environ.get("RELAX_RUN_B300_GPU_TESTS") != "1",
-                reason="Pinned FA4 regression requires the B300 image (RELAX_RUN_B300_GPU_TESTS=1)",
+                os.environ.get("RELAX_RUN_BLACKWELL_GPU_TESTS") != "1",
+                reason="Pinned FA4 regression requires the SM103 image (RELAX_RUN_BLACKWELL_GPU_TESTS=1)",
             ),
         ),
     ],
@@ -77,7 +77,7 @@ def _assert_packed_attention_forward_backward(
 
         from _relax_fa4_pr2968.cute.interface import flash_attn_varlen_func
 
-        assert torch.cuda.get_device_capability() == (10, 3), "Run the selected FA4 gate on B300"
+        assert torch.cuda.get_device_capability() == (10, 3), "Run the selected FA4 gate on SM103"
         assert version("nvidia-cutlass-dsl") == "4.6.2", "Use the image-built FA4/CUTLASS runtime"
     else:
         from transformer_engine.pytorch import DotProductAttention

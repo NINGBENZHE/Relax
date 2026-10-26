@@ -697,7 +697,7 @@ def test_raw_provider_uses_supplied_config_and_process_groups(monkeypatch, expli
         ("gdn_conv_pad_alignment", 8192),
     ],
 )
-def test_bridge_forwards_b300_runtime_configuration(monkeypatch, name, value):
+def test_bridge_forwards_blackwell_runtime_configuration(monkeypatch, name, value):
     provider = _FakeProvider()
     setattr(provider, name, None)
     module, provider = _load_model_provider(monkeypatch, provider)

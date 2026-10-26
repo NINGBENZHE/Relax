@@ -12,16 +12,17 @@ from relax.utils.training.qwen38_flops import _estimate_qwen38_flops
 logger = get_logger(__name__)
 
 # BF16 theoretical peak FLOPS per device (raw FLOPS).
+# Model names are compatibility keys, not a record of deployed hardware.
 _DEVICE_FLOPS = {
     "CPU": 448e9,
-    "GB200": 2.5e15,
-    "B200": 2.25e15,
-    "GB300": 2.5e15,
-    "B300": 2.25e15,
+    "GB200": 2.5e15,  # gitleaks:allow
+    "B200": 2.25e15,  # gitleaks:allow
+    "GB300": 2.5e15,  # gitleaks:allow
+    "B300": 2.25e15,  # gitleaks:allow
     "MI300X": 1307e12,
     "MI350X": 2300e12,
     "MI355X": 2500e12,
-    "H100": 989e12,
+    "H100": 989e12,  # gitleaks:allow
     "H800": 989e12,
     "L20Y": 989e12,
     "H200": 989e12,

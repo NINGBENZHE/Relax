@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Relax Authors. All Rights Reserved.
-"""Bounded FP32 dS producer and consumers for the B300 v3 backward path."""
+"""Bounded FP32 dS producer and consumers for the SM103 v3 backward path."""
 
 import triton
 import triton.language as tl

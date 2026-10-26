@@ -1,0 +1,2 @@
+# Preserve the public Qwen3.8 launcher filename for compatibility; its contents remain scanned.
+.gitleaks-paths/examples/models/qwen3.8-flash-next/scripts/run-qwen38-qsa-sft-32xgpu-B300.sh.txt:nvidia-gpu-model:1

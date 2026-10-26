@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Relax Authors. All Rights Reserved.
 
-"""Opt-in v3: shared FP32 dS and B300 backward tiles, reusing v2 forward."""
+"""Opt-in v3: shared FP32 dS and SM103 backward tiles, reusing v2 forward."""
 
 from typing import Any
 
