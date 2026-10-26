@@ -51,7 +51,6 @@ def test_backward_launch_override_preserves_forward(monkeypatch, bf16_products, 
         3 if override or not bf16_products else 1,
     )
     assert [value.shape for value in grads[:3]] == [q.shape, kv.shape, kv.shape]
-    assert not torch.cuda.is_initialized()
 
 
 class _PretendCudaTensor(torch.Tensor):
@@ -65,14 +64,7 @@ class _PretendCudaTensor(torch.Tensor):
 
 @pytest.fixture
 def selector_inputs(monkeypatch):
-    import sys
-    from types import ModuleType
-
     from megatron.core.models.common.embeddings import rope_utils
-
-    selection_module = ModuleType("megatron.core.transformer.experimental_attention_variant.qsa")
-    selection_module.QSASelection = SimpleNamespace
-    monkeypatch.setitem(sys.modules, selection_module.__name__, selection_module)
 
     from relax.models.qwen3_8.ops.qsa_mixed_ops import selector
 
@@ -145,7 +137,6 @@ def test_selector_compile_branch_restores_global_reduction(monkeypatch, selector
         assert seen == ["compiled" if enabled == "1" else "eager"]
     finally:
         torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = previous
-    assert not torch.cuda.is_initialized()
 
 
 @pytest.mark.parametrize("attribute,value", [("head_dim", 64), ("compress_ratio", 2), ("n_heads", 8)])

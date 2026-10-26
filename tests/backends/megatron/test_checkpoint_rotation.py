@@ -45,6 +45,7 @@ def test_checkpoint_sync_rotation_follows_successful_save(rank, fail):
         opt_param_scheduler=None,
         role="actor",
         _is_standard_dpo=lambda: False,
+        _flush_resident_sft_parameters=lambda: None,
     )
     if fail:
         with pytest.raises(OSError, match="save failed"):

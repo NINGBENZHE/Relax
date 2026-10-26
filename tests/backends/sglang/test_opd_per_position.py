@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Relax Authors. All Rights Reserved.
 
 import ast
+import inspect
 from enum import Enum, auto
 from types import SimpleNamespace
 
@@ -81,6 +82,10 @@ def test_per_position_zero_row_request_does_not_consume_scores():
 
 
 @pytest.mark.parametrize("top_k", [1, 3])
+@pytest.mark.skipif(
+    "log_normalizer" not in inspect.signature(logprob.get_token_ids_logprobs_chunk).parameters,
+    reason="Requires SGLang chunk logprobs with log_normalizer support",
+)
 def test_per_position_raw_logits_normalize_across_chunks(top_k):
     torch.manual_seed(42)
     logits = torch.randn(11, 10) * 20
