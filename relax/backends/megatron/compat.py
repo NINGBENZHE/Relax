@@ -14,6 +14,49 @@ _NATIVE_FP32_LOAD_PATCHED = "_relax_native_fp32_load_patched"
 _HDO_STEP_LOAD_LOCK = RLock()
 
 
+def _patch_hdo_group_steps(optimizer_cls: type) -> bool:
+    """Keep group-owned Adam counters when HDO synchronizes tensor state."""
+    import torch
+
+    original = optimizer_cls._sync_sub_optimizers_state_to_hdo
+    if getattr(original, "_relax_group_steps", False):
+        return False
+
+    @wraps(original)
+    def sync(self: Any) -> None:
+        original(self)
+        owners = {param: i for i, group in enumerate(self.param_groups) for param in group["params"]}
+        steps: dict[int, int] = {}
+        for child in self.sub_optimizers:
+            if isinstance(child, (torch.optim.Adam, torch.optim.AdamW)):
+                continue
+            for group in child.param_groups:
+                # Torch Adam keeps counters in per-parameter state, already
+                # handled by HDO; TE/Apex Adam keeps them on the group.
+                if "step" not in group or not group["params"]:
+                    continue
+                owner = owners[self.inner_param_to_orig_param[group["params"][0]]]
+                step = group["step"]
+                if not isinstance(step, int) or step < 0:
+                    raise RuntimeError("HDO group-owned Adam step must be a non-negative Python integer")
+                if owner in steps and steps[owner] != step:
+                    raise RuntimeError("HDO sub-optimizers disagree on their Adam group step")
+                steps[owner] = step
+        for owner, step in steps.items():
+            self.param_groups[owner]["step"] = step
+
+    sync._relax_group_steps = True
+    optimizer_cls._sync_sub_optimizers_state_to_hdo = sync
+    return True
+
+
+def patch_hdo_group_steps() -> bool:
+    """Backport HDO group-counter synchronization without tensor copies."""
+    from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
+
+    return _patch_hdo_group_steps(HybridDeviceOptimizer)
+
+
 def _patch_hybrid_optimizer_class(optimizer_cls: type) -> bool:
     """Restore all HDO inner parameters when loading older-image
     checkpoints."""

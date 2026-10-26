@@ -600,6 +600,11 @@ def setup_model_and_optimizer(
     config.timers = None
     _validate_vit_lr_trainable_params(args, model)
 
+    if args.optimizer_cpu_offload:
+        from .compat import patch_hdo_group_steps
+
+        patch_hdo_group_steps()
+
     optimizer = get_megatron_optimizer(
         config=config,
         model_chunks=model,
