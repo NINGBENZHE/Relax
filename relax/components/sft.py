@@ -37,6 +37,8 @@ from ray import serve
 from transformers import AutoConfig, AutoTokenizer
 
 from relax.components.base import Base
+from relax.engine.sft.data_state import restore_data_state, save_data_state
+from relax.engine.sft.dataset import streaming as streaming_dataset
 from relax.engine.sft.dataset.preference import (
     PreferenceStreamingDataset,
     ProcessedPreferencePair,
@@ -872,8 +874,11 @@ class SFT(Base):
                     image_preprocess_on_rank=getattr(self.config, "sft_image_preprocess_on_rank", False),
                 )
 
-        # Resume: align IndexManager with `start_rollout_id` so a restart sees
-        # the same shuffled order it would on a fresh run.
+        if isinstance(self._dataset, streaming_dataset.SFTStreamingDataset):
+            restore_data_state(self.config, self._dataset, self.step, self._train_size)
+            return
+
+        # Preserve custom dataset positioning contracts.
         if self._train_size > 0:
             consumed = self.step * self.config.global_batch_size
             start_epoch = consumed // self._train_size
@@ -1038,6 +1043,8 @@ class SFT(Base):
                 "after bounded refill attempts. Refusing to push a partial TQ partition because the Megatron "
                 "consumer requires a full global batch. Check invalid-multimodal and oversize skip warnings."
             )
+        if isinstance(self._dataset, streaming_dataset.SFTStreamingDataset):
+            save_data_state(self.config, self._dataset, self.step + 1, self._train_size, samples)
         self._maybe_print_first_sample(samples)
         put_started = time.monotonic()
         for partition_id, shard_samples in zip(

@@ -49,6 +49,45 @@ def value(args, name):
     return args[args.index(name) + 1]
 
 
+def test_397b_real_entry_delegates_without_inheriting_nounset(tmp_path):
+    entry = tmp_path / SFT64.relative_to(ROOT)
+    entry.parent.mkdir(parents=True)
+    entry.write_text(SFT64.read_text())
+    launcher = tmp_path / "scripts/entrypoint/ray-job.sh"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text(
+        "#!/usr/bin/env bash\n"
+        'unused="${NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME:-${NCCL_SOCKET_IFNAME}}"\n'
+        "python3 - \"$@\" <<'PY'\n"
+        "import json, sys\n"
+        "print(json.dumps(sys.argv[1:]))\n"
+        "PY\n"
+    )
+    env = os.environ.copy()
+    for key in ("RELAX_ENTRYPOINT_MODE", "NCCL_SOCKET_IFNAME", "NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME"):
+        env.pop(key, None)
+    env.update(MODEL_DIR="/model", DATA_DIR="/data", SAVE_DIR="/checkpoints", DRY_RUN="0")
+    arguments = ["--multimodal", "--num-rollout", "25", "--save", "path with spaces"]
+    result = subprocess.run(["bash", str(entry), *arguments], env=env, capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == [str(entry), *arguments]
+
+
+def test_397b_multimodal_preserves_delivered_vision_defaults():
+    args = render(SFT64, "--multimodal")["args"]
+    assert value(args, "--image-max-token-num") == "512"
+    assert value(args, "--image-min-token-num") == "4"
+    assert "--freeze-vision-model" in args
+    assert "--freeze-vision-projection" in args
+    overridden = render(SFT64, "--multimodal", FREEZE_VISION="0", IMAGE_MAX_TOKEN_NUM="1024", IMAGE_MIN_TOKEN_NUM="8")[
+        "args"
+    ]
+    assert value(overridden, "--image-max-token-num") == "1024"
+    assert value(overridden, "--image-min-token-num") == "8"
+    assert "--freeze-vision-model" not in overridden
+    assert "--freeze-vision-projection" not in overridden
+
+
 @pytest.mark.parametrize("entry", ENTRIES, ids=lambda entry: entry.stem)
 def test_resume_and_checkpoint_paths_are_stable(entry):
     first = render(entry)["args"]
@@ -178,3 +217,60 @@ def test_multimodal_runtime_preserves_base_environment():
 def test_entry_disables_cluster_cleanup_before_setup(entry):
     source = entry.read_text()
     assert source.index("export RELAX_SKIP_CLUSTER_CLEANUP=1") < source.index("/scripts/entrypoint/ray-job.sh")
+
+
+def test_397b_accepts_direct_paths_and_resume_overrides(tmp_path):
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "config.json").write_text("{}")
+    data = tmp_path / "dataset.jsonl"
+    data.write_text("")
+    extra = ["--ckpt-step", "19", "--num-rollout", "40", "--use-checkpoint-opt-param-scheduler"]
+    args = render(SFT64, "--multimodal", *extra, MODEL_DIR=str(model), DATA_DIR=str(data))["args"]
+    assert value(args, "--hf-checkpoint") == value(args, "--ref-load") == str(model)
+    assert value(args, "--prompt-data") == str(data)
+    assert args[-len(extra) :] == extra
+
+
+def test_397b_preserves_legacy_dataset_parent(tmp_path):
+    data = tmp_path / "multimodal.jsonl"
+    data.write_text("")
+    args = render(SFT64, "--multimodal", DATA_DIR=str(tmp_path))["args"]
+    assert value(args, "--prompt-data") == str(data)
+
+
+@pytest.mark.parametrize("flag", ["--tensor-model-parallel-size=8", "--moe-flex-dispatcher-backend"])
+def test_397b_forwarding_does_not_override_fixed_topology(flag):
+    result = run_entry(SFT64, flag, "hybridep")
+    assert result.returncode != 0
+    assert "fixed topology" in result.stderr
+
+
+def test_397b_submission_id_reaches_ray_without_real_submission(tmp_path):
+    entry = tmp_path / "scripts/training/sft" / SFT64.name
+    entry.parent.mkdir(parents=True)
+    entry.write_text(SFT64.read_text())
+    model_script = tmp_path / "scripts/models/qwen35-397B-A17B.sh"
+    model_script.parent.mkdir(parents=True)
+    model_script.write_text((ROOT / "scripts/models/qwen35-397B-A17B.sh").read_text())
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_ray = bin_dir / "ray"
+    fake_ray.write_text('#!/usr/bin/env bash\nprintf "%s\\0" "$@" > "$CAPTURE_PATH"\n')
+    fake_ray.chmod(0o755)
+    captured = tmp_path / "ray-args"
+    result = run_entry(
+        entry,
+        "--ckpt-step",
+        "19",
+        DRY_RUN="0",
+        RELAX_ENTRYPOINT_MODE="test",
+        RAY_ADDRESS="http://unused.invalid",
+        SUBMISSION_ID="resume-test",
+        PATH=str(bin_dir) + os.pathsep + os.environ["PATH"],
+        CAPTURE_PATH=str(captured),
+    )
+    assert result.returncode == 0, result.stderr
+    args = captured.read_text().split("\0")[:-1]
+    assert value(args, "--submission-id") == "resume-test"
+    assert args[-2:] == ["--ckpt-step", "19"]

@@ -16,6 +16,7 @@ export NUM_GPUS=64
 export RAY_ADDRESS="${RAY_ADDRESS:-http://127.0.0.1:8265}"
 export RAY_JOBS_ADDRESS="${RAY_JOBS_ADDRESS:-$RAY_ADDRESS}"
 export RAY_NO_WAIT="${RAY_NO_WAIT-}"
+export RELAX_SKIP_CLUSTER_CLEANUP="${RELAX_SKIP_CLUSTER_CLEANUP:-1}"
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONPATH="$RELAX:${PYTHONPATH:-}"
 if [[ "${DRY_RUN:-0}" != 1 && -z "${RELAX_ENTRYPOINT_MODE:-}" ]]; then
@@ -80,6 +81,7 @@ def build_environment() -> dict[str, str]:
                     os.environ.get("LD_LIBRARY_PATH", ""),
                 ]
             ),
+            "RELAX_FLA_CONV_NB_MODE": "none",
             "EP_NCCL_ROOT_DIR": str(nccl),
             "EP_JIT_CACHE_DIR": f"/tmp/relax-qwen35-{os.getuid()}/deepep",
         }
@@ -143,7 +145,7 @@ if os.environ.get("DRY_RUN") != "1":
     manifest = json.loads(Path("/etc/relax-qwen35-runtime.json").read_text())
     assert manifest["packages"]["relax-deep-ep-v2"] == "2.1.0"
     mode = os.environ.get("RELAX_FLA_CONV_NB_MODE", "original")
-    assert mode == "none" or (mode == "auto" and os.environ.get("RELAX_GPU_ARCH") == "b300")  # gitleaks:allow -- existing runtime environment compatibility key
+    assert mode == "none" or (mode == "auto" and os.environ.get("RELAX_GPU_ARCH") in {"blackwell", "b300"})  # gitleaks:allow -- existing runtime environment compatibility key
 env = build_environment()
 multimodal = sys.argv[1] == "1"
 if multimodal:

@@ -56,7 +56,7 @@ def test_manifest_patch_hashes_use_files_copied_into_runtime_stage(tmp_path):
         {"hashlib": hashlib, "Path": lambda path: tmp_path / path.lstrip("/")},
     )
     paths = ast.literal_eval(expression.generators[0].iter.func.value)
-    assert set(result) == {"deepep", "fa4", "flashqla", "megatron", "model_operators"}
+    assert set(result) == {"deepep", "fa4", "flashqla", "megatron", "model_operators", "checkpoint"}
     for name, path in paths.items():
         assert result[name] == hashlib.sha256(copied[path].read_bytes()).hexdigest()
 
@@ -68,6 +68,7 @@ def test_manifest_patch_hashes_use_files_copied_into_runtime_stage(tmp_path):
         "megatron/20261016-qwen38-models.patch",
         "megatron/20261020-qwen35-optimized.patch",
         "megatron/20261020-model-operators.patch",
+        "megatron/20261028-dp-reshardable-checkpoint.patch",
         "transformer_engine/2.18.0-cp-padding-no-host-sync.patch",
     ],
 )
