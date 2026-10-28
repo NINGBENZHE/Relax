@@ -11,16 +11,9 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MM16 = (
-    ROOT
-    / "scripts/training/sft/run-qwen3.6-35B-A3B-sft-16xgpu-multimodal-b300.sh"  # gitleaks:allow -- compatibility literal
-)
-SFT64 = (
-    ROOT / "scripts/training/sft/run-qwen3.5-397B-A17B-sft-64xB300.sh"  # gitleaks:allow -- compatibility literal
-)
-CPT64 = (
-    ROOT / "scripts/training/cpt/run-qwen3.5-397B-A17B-cpt-64xB300.sh"  # gitleaks:allow -- compatibility literal
-)
+MM16 = ROOT / "scripts/training/sft/run-qwen3.6-35B-A3B-sft-16xgpu-multimodal-blackwell.sh"
+SFT64 = ROOT / "scripts/training/sft/run-qwen3.5-397B-A17B-sft-64xblackwell.sh"
+CPT64 = ROOT / "scripts/training/cpt/run-qwen3.5-397B-A17B-cpt-64xblackwell.sh"
 ENTRIES = [MM16, SFT64, CPT64]
 
 

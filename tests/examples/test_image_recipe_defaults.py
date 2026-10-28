@@ -10,7 +10,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SFT = "scripts/training/sft/run-qwen35-optimized-64xB300.sh"  # gitleaks:allow -- public launcher path
+SFT = "scripts/training/sft/run-qwen35-optimized-64xblackwell.sh"
 CPT = "scripts/training/cpt/run-qwen3.6-35B-A3B-cpt-256k-64xgpu.sh"
 QSA = "examples/models/qwen3.8-flash-next/scripts/run-qwen38-qsa-sft-32xgpu-blackwell.sh"
 

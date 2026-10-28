@@ -10,10 +10,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 KEY = "RELAX_SKIP_NONFINITE_GRAD"
-SFT = "scripts/training/sft/run-qwen35-optimized-64xB300.sh"  # gitleaks:allow -- public launcher path compatibility
-SFT397 = (
-    "scripts/training/sft/run-qwen3.5-397B-A17B-sft-64xB300.sh"  # gitleaks:allow -- public launcher path compatibility
-)
+SFT = "scripts/training/sft/run-qwen35-optimized-64xblackwell.sh"
+SFT397 = "scripts/training/sft/run-qwen3.5-397B-A17B-sft-64xblackwell.sh"
 CPT = "scripts/training/cpt/run-qwen3.6-35B-A3B-cpt-256k-64xgpu.sh"
 QWEN38 = "examples/models/qwen3.8-flash-next/scripts/run-qwen38-qsa-sft-32xgpu-blackwell.sh"
 
