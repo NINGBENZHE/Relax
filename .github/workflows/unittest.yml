@@ -49,6 +49,11 @@ jobs:
           # Include patch targets as well as the symlinks under patch/latest.
           hash-key: ${{ hashFiles('docker/Dockerfile', '.dockerignore', 'requirements.txt', 'docker/patch/**', 'relax/backends/megatron/kernels/int4_qat/**', '.github/actions/prepare-image/action.yml') }}
 
+      - name: Set up host Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
       - name: Acquire test devices
         id: devices
         uses: ./.github/actions/acquire-devices
