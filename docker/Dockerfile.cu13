@@ -240,12 +240,16 @@ RUN sed -i '/^nvidia-resiliency-ext==/d' "$PIP_CONSTRAINT" && \
     pip install --no-cache-dir \
         "nvidia-resiliency-ext @ git+https://github.com/NVIDIA/nvidia-resiliency-ext.git@6c5f2a13c7688d92a7ac7ee6e464721eb8b7345d"
 
-# Pin both FLA distributions in the final stage, including external TRAIN_IMAGE builds.
-RUN sed -i '/^flash-linear-attention==/d; /^fla-core==/d' "$PIP_CONSTRAINT" && \
-    printf '%s\n' 'fla-core==0.5.2' 'flash-linear-attention==0.5.2' >> "$PIP_CONSTRAINT" && \
+# Pin FLA and the validated data-loader dependencies, including external TRAIN_IMAGE builds.
+# MSC 1.3.1 requires a newer OpenTelemetry API than the image's 1.44 SDK supports.
+RUN sed -i \
+        -e '/^flash-linear-attention==/d' -e '/^fla-core==/d' \
+        -e '/^megatron-energon==/d' -e '/^multi-storage-client==/d' "$PIP_CONSTRAINT" && \
+    printf '%s\n' 'fla-core==0.5.2' 'flash-linear-attention==0.5.2' \
+        'megatron-energon==7.4.1' 'multi-storage-client==1.2.0' >> "$PIP_CONSTRAINT" && \
     pip install --no-cache-dir --force-reinstall --no-deps \
         "fla-core==0.5.2" "flash-linear-attention==0.5.2" && \
-    pip install --no-cache-dir megatron-energon
+    pip install --no-cache-dir megatron-energon multi-storage-client
 
 # Keep related build inputs in one layer: the inherited CUDA image is already deep.
 # Preserve KDA precision, then install all process-selected convolution entries.
