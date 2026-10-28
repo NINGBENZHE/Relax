@@ -32,7 +32,7 @@ rows."""
 import os
 import typing
 from dataclasses import dataclass, field
-from functools import lru_cache, wraps
+from functools import lru_cache
 from typing import Any, Tuple, Type
 
 import torch
@@ -1667,7 +1667,7 @@ class _AccumulateWeightGradient(torch.autograd.Function):
         return None
 
 
-def _linear_cross_entropy(
+def linear_cross_entropy(
     hidden: torch.Tensor,
     weight: torch.Tensor,
     labels: torch.Tensor,
@@ -1697,46 +1697,3 @@ def _linear_cross_entropy(
         with torch.no_grad():
             logits = x @ weight.T
     return losses.reshape(hidden.shape[:-1]), logits
-
-
-def install() -> None:
-    from .. import fused_linear_ce
-
-    original = fused_linear_ce.linear_cross_entropy
-    if getattr(original, "_relax_linear_ce_patch", False):
-        return
-
-    @wraps(original)
-    def linear_cross_entropy(
-        hidden: torch.Tensor,
-        weight: torch.Tensor,
-        labels: torch.Tensor,
-        tp_group: Any,
-        *,
-        temperature: float = 1.0,
-        accumulate: bool = False,
-        return_logits: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        # The historical kernel has no temperature argument. Retain the existing
-        # implementation for other temperatures, including its validation.
-        if temperature != 1.0:
-            return original(
-                hidden,
-                weight,
-                labels,
-                tp_group,
-                temperature=temperature,
-                accumulate=accumulate,
-                return_logits=return_logits,
-            )
-        return _linear_cross_entropy(
-            hidden,
-            weight,
-            labels,
-            tp_group,
-            accumulate=accumulate,
-            return_logits=return_logits,
-        )
-
-    linear_cross_entropy._relax_linear_ce_patch = True
-    fused_linear_ce.linear_cross_entropy = linear_cross_entropy

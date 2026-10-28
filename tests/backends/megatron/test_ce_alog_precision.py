@@ -20,18 +20,24 @@ sm100 = pytest.mark.skipif(
 
 @pytest.mark.parametrize("enabled", [False, True])
 @pytest.mark.parametrize("backport_first", [False, True])
-def test_ce_installation_follows_worker_environment(enabled, backport_first):
+def test_ce_dispatch_preserves_entrypoint_identity(enabled, backport_first):
     script = f"""
 import importlib
 if {backport_first!r}:
-    importlib.import_module('relax.backends.megatron.megatron_patch.fused_linear_cross_entropy_patch')
+    importlib.import_module('relax.backends.megatron.kernels.linear_cross_entropy')
 from relax.backends.megatron import fused_linear_ce
-assert bool(getattr(fused_linear_ce.linear_cross_entropy, '_relax_linear_ce_patch', False)) == {enabled!r}
-from relax.backends.megatron.megatron_patch import fused_linear_cross_entropy_patch as patch
-patch.install()
-installed = fused_linear_ce.linear_cross_entropy
-patch.install()
-assert fused_linear_ce.linear_cross_entropy is installed
+original = fused_linear_ce.linear_cross_entropy
+from relax.backends.megatron.kernels import linear_cross_entropy as kernel
+assert fused_linear_ce.linear_cross_entropy is original
+backport_result, fallback_result = object(), object()
+kernel.linear_cross_entropy = lambda *args, **kwargs: backport_result
+fused_linear_ce._LinearCE.apply = lambda *args: fallback_result
+fused_linear_ce._log_enabled = lambda *args: None
+import torch
+hidden = torch.ones(1)
+expected = backport_result if {enabled!r} else fallback_result
+assert fused_linear_ce.linear_cross_entropy(hidden, hidden, hidden, None) is expected
+assert fused_linear_ce.linear_cross_entropy is original
 """
     env = dict(os.environ, CUDA_VISIBLE_DEVICES="", RELAX_SFT_FUSED_LINEAR_CE=str(int(enabled)))
     result = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=90)
@@ -41,16 +47,9 @@ assert fused_linear_ce.linear_cross_entropy is installed
 @pytest.fixture
 def patched_ce(monkeypatch):
     from relax.backends.megatron import fused_linear_ce
-    from relax.backends.megatron.megatron_patch import fused_linear_cross_entropy_patch as patch
 
-    # Register restoration before install() mutates the shared backend module.
-    monkeypatch.setattr(fused_linear_ce, "linear_cross_entropy", fused_linear_ce.linear_cross_entropy)
-    patch.install()
-    installed = fused_linear_ce.linear_cross_entropy
-    assert installed._relax_linear_ce_patch
-    patch.install()
-    assert fused_linear_ce.linear_cross_entropy is installed
-    return installed
+    monkeypatch.setenv("RELAX_SFT_FUSED_LINEAR_CE", "1")
+    return fused_linear_ce.linear_cross_entropy
 
 
 def _assert_gradient_close(actual: torch.Tensor, expected: torch.Tensor) -> None:
@@ -112,21 +111,22 @@ def test_ce_patch_matches_fp64_loss_and_gradients(patched_ce, accumulate):
 
 def test_ce_patch_preserves_nonunit_temperature_fallback(monkeypatch):
     from relax.backends.megatron import fused_linear_ce
-    from relax.backends.megatron.megatron_patch import fused_linear_cross_entropy_patch as patch
 
     calls = []
     result = (object(), object())
 
-    def original(*args, **kwargs):
-        calls.append((args, kwargs))
+    def original(*args):
+        calls.append(args)
         return result
 
-    monkeypatch.setattr(fused_linear_ce, "linear_cross_entropy", original)
-    patch.install()
-    args = (object(), object(), object(), object())
-    kwargs = {"temperature": 0.7, "accumulate": True, "return_logits": True}
-    assert fused_linear_ce.linear_cross_entropy(*args, **kwargs) is result
-    assert calls == [(args, kwargs)]
+    monkeypatch.setenv("RELAX_SFT_FUSED_LINEAR_CE", "1")
+    monkeypatch.setattr(fused_linear_ce._LinearCE, "apply", original)
+    monkeypatch.setattr(fused_linear_ce, "_log_enabled", lambda *args: None)
+    hidden = torch.ones(1, requires_grad=True)
+    hidden.main_grad = torch.zeros(1)
+    args = (hidden, hidden, object(), object())
+    assert fused_linear_ce.linear_cross_entropy(*args, temperature=0.7, accumulate=True, return_logits=True) is result
+    assert calls == [(*args, 1.0 / 0.7, True, True)]
 
 
 @pytest.mark.parametrize(
