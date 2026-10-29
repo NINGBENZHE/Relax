@@ -193,8 +193,8 @@ PARALLEL_ARGS=(
     --recompute-method uniform
     --recompute-num-layers 2
     --no-offload-train
-    # Reclaim unused activation/optimizer cache between variable-length steps.
-    --empty-unused-memory-level 2
+    # Retain allocator caches between updates to avoid repeated allocations.
+    --empty-unused-memory-level 0
 )
 
 # Relax takes an integer interval and always saves on the final step.
@@ -248,7 +248,7 @@ SFT_ARGS=(
     --mtp-loss-scaling-factor 0.1
     --mtp-detach-paths none
     --multimodal-keys '{"image":"images"}'
-    --image-max-token-num "${IMAGE_MAX_TOKENS:-512}"
+    --image-max-token-num "${IMAGE_MAX_TOKENS:-128}"
     --sft-image-preprocess-on-rank
 )
 
