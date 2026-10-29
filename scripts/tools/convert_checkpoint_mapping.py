@@ -256,8 +256,6 @@ def _language_target(suffix: str) -> tuple[str, str]:
         "self_attention.linear_qkv.layer_norm_weight": "input_layernorm.weight",
         "self_attention.in_proj.layer_norm_weight": "input_layernorm.weight",
         "mlp.router.weight": "mlp.gate.weight",
-        "mlp.experts.experts.linear_fc1.weight": "mlp.experts.gate_up_proj",
-        "mlp.experts.experts.linear_fc2.weight": "mlp.experts.down_proj",
         "mlp.shared_experts.linear_fc2.weight": "mlp.shared_expert.down_proj.weight",
         "mlp.shared_experts.gate_weight": "mlp.shared_expert_gate.weight",
         "self_attention.q_layernorm.weight": "self_attn.q_norm.weight",

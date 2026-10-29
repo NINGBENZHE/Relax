@@ -206,13 +206,11 @@ def test_sft_sequence_limit_is_bound_for_train_and_eval(monkeypatch):
 
 
 @pytest.mark.parametrize("accepts_kwargs", [False, True])
-def test_sft_custom_hook_without_config_keeps_existing_arguments(monkeypatch, accepts_kwargs):
+def test_sft_custom_hook_keeps_existing_arguments(monkeypatch, accepts_kwargs):
     from relax.components import sft as sft_module
 
-    received = []
-
     def legacy_hook(*, tokens, loss_mask, capacity, idx):
-        received.append(dict(tokens=tokens, loss_mask=loss_mask, capacity=capacity, idx=idx))
+        assert capacity == 8 and idx == 7
         return tokens, loss_mask
 
     def kwargs_hook(**kwargs):
@@ -230,9 +228,6 @@ def test_sft_custom_hook_without_config_keeps_existing_arguments(monkeypatch, ac
     )
     assert configured is hook
     assert result[0] is tokens and result[1] is tokens
-    assert len(received) == 1
-    assert set(received[0]) == {"tokens", "loss_mask", "capacity", "idx"}
-    assert received[0]["capacity"] == 8 and received[0]["idx"] == 7
 
 
 @pytest.mark.asyncio

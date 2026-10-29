@@ -9,7 +9,5 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-RELAX_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
-export PYTHONPATH="${RELAX_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 export CUDA_VISIBLE_DEVICES=""
 exec "${PYTHON_BIN:-python3}" "${SCRIPT_DIR}/convert_checkpoint_to_hf_cpu.py" "$@"

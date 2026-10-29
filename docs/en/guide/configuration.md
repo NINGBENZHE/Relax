@@ -477,8 +477,6 @@ How the SFT producer handles samples whose tokenized + media-expanded length exc
 | `--sft-oversize-strategy` | str | keep | `skip`, `keep`, `truncate_left`, `truncate_right`, `custom` | `skip` drops the sample; `keep` returns it unchanged (may OOM downstream); `truncate_left` keeps the last `capacity` tokens; `truncate_right` keeps the first `capacity` tokens; `custom` delegates to `--sft-oversize-custom-function-path`. ⚠ Truncating multimodal samples in-place may misalign `multimodal_train_inputs` — use `custom` if you also need to trim media inputs. |
 | `--sft-oversize-custom-function-path` | str | None | - | Required when `--sft-oversize-strategy custom`. Importable path to a function with signature `def truncate(tokens, loss_mask, capacity, idx) -> (tokens, loss_mask) \| None`. Returning `None` is treated as `skip`. |
 
-A custom function may also declare a keyword parameter `config`; Relax binds the training configuration when loading that function. Existing functions without this parameter keep the four-argument interface.
-
 To keep complete SFT samples above the packing budget but skip samples beyond `--seq-length`, add these options to the training command:
 
 ```bash

@@ -477,8 +477,6 @@ SFT producer 如何处理 tokenize + 多模态展开后长度超过单卡容量�
 | `--sft-oversize-strategy` | str | keep | `skip`, `keep`, `truncate_left`, `truncate_right`, `custom` | `skip` 丢弃样本；`keep` 原样返回（可能下游 OOM）；`truncate_left` 保留末尾 `capacity` 个 token；`truncate_right` 保留开头 `capacity` 个 token；`custom` 委托给 `--sft-oversize-custom-function-path`。⚠ 直接截多模态样本可能导致 `multimodal_train_inputs` 错位——需要同时裁剪媒体输入时请用 `custom`。 |
 | `--sft-oversize-custom-function-path` | str | None | - | 在 `--sft-oversize-strategy custom` 时必填。指向一个 Python 可导入函数，签名为 `def truncate(tokens, loss_mask, capacity, idx) -> (tokens, loss_mask) \| None`。返回 `None` 等同于 `skip`。 |
 
-自定义函数也可以声明关键字参数 `config`，Relax 会在加载函数时绑定训练配置。未声明该参数的已有函数仍使用原来的四个参数。
-
 如果希望完整保留超过打包预算的 SFT 样本，同时跳过超过 `--seq-length` 的样本，可在训练命令中加入：
 
 ```bash
