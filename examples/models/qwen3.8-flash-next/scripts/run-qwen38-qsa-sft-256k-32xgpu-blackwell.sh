@@ -86,13 +86,12 @@ fi
 # Explicit driver/actor settings override entrypoint defaults (notably connections=1).
 ENV_ARGS=(
     "RELAX_SKIP_NONFINITE_GRAD=${RELAX_SKIP_NONFINITE_GRAD:-0}"
-    "SFT_MAX_SAMPLE_TOKENS=${SEQ_LENGTH}"
     MCORE_QSA_SPARSE_BACKEND=id_sparse
     TORCHINDUCTOR_COMPILE_THREADS=1
     QWEN38_PLE_CPU_OFFLOAD=1
     "RELAX_HYBRID_EP_COMMIT=${RELAX_HYBRID_EP_COMMIT}"
     "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}"
-    RELAX_PROPAGATE_ENV_VARS=QWEN38_WORKSPACE,SAVE_DIR,RELAX_PROFILE_DIR,TENSORBOARD_DIR,CLEARML_CACHE_DIR,CLEARML_OFFLINE_MODE,PYTHONDONTWRITEBYTECODE,RELAX_HYBRID_EP_COMMIT,LD_LIBRARY_PATH,NVLINK_DOMAIN_SIZE,USE_MNNVL,CUDA_DEVICE_MAX_CONNECTIONS,QWEN38_RUN_DIR,RELAX_SKIP_NONFINITE_GRAD,SFT_MAX_SAMPLE_TOKENS
+    RELAX_PROPAGATE_ENV_VARS=QWEN38_WORKSPACE,SAVE_DIR,RELAX_PROFILE_DIR,TENSORBOARD_DIR,CLEARML_CACHE_DIR,CLEARML_OFFLINE_MODE,PYTHONDONTWRITEBYTECODE,RELAX_HYBRID_EP_COMMIT,LD_LIBRARY_PATH,NVLINK_DOMAIN_SIZE,USE_MNNVL,CUDA_DEVICE_MAX_CONNECTIONS,QWEN38_RUN_DIR,RELAX_SKIP_NONFINITE_GRAD
     NCCL_NVLS_ENABLE=0
     "PYTHONPATH=${RELAX}:${MEGATRON}"
     "MEGATRON=${MEGATRON}"
@@ -228,7 +227,7 @@ SFT_ARGS=(
     --sft-oversize-strategy custom
     --sft-oversize-custom-function-path relax.engine.sft.dataset.oversize.keep_within_sequence_limit
     --calculate-per-token-loss
-    # The hook enforces SEQ_LENGTH after multimodal expansion. Do not set
+    # The hook reads --seq-length after multimodal expansion. Do not set
     # rollout-max-context-len: this recipe deliberately permits long singletons.
     --global-batch-size "${GBS:-4096}"
     --rollout-batch-size "${GBS:-4096}"
@@ -331,7 +330,7 @@ runtime = json.loads(sys.argv[2])
 # Only record explicitly selected training settings, not inherited credentials.
 selected = {key: value for key, value in runtime.get("env_vars", {}).items()
             if key.startswith(("RELAX_QWEN38_", "RELAX_SFT_")) or key in
-            ("MCORE_QSA_SPARSE_BACKEND", "CUDA_DEVICE_MAX_CONNECTIONS", "RELAX_HYBRID_EP_COMMIT", "SFT_MAX_SAMPLE_TOKENS")}
+            ("MCORE_QSA_SPARSE_BACKEND", "CUDA_DEVICE_MAX_CONNECTIONS", "RELAX_HYBRID_EP_COMMIT")}
 Path(sys.argv[1]).write_text(json.dumps({"argv": sys.argv[3:], "env_vars": selected}, indent=2) + "\n")
 PYCONFIG
 fi

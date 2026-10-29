@@ -26,9 +26,11 @@ Mirrors `relax/components/advantages.py` in shape: no FastAPI ingress, plain
 """
 
 import asyncio
+import inspect
 import os
 import random
 import time
+from functools import partial
 from typing import Any
 
 import ray
@@ -120,6 +122,12 @@ def _resolve_sft_dataset_options(config: Any, logger: Any | None = None) -> dict
         if not oversize_custom_path:
             raise ValueError("--sft-oversize-strategy custom requires --sft-oversize-custom-function-path.")
         oversize_custom_fn = load_function(oversize_custom_path)
+        config_parameter = inspect.signature(oversize_custom_fn).parameters.get("config")
+        if config_parameter is not None and config_parameter.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            oversize_custom_fn = partial(oversize_custom_fn, config=config)
         if logger is not None:
             logger.info(f"SFT oversize strategy: custom (loaded {oversize_custom_path})")
     elif logger is not None:
