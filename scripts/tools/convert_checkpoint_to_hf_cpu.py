@@ -4,8 +4,8 @@
 
 DCP global offsets recover TP/PP/EP shards; mappings consume only model
 tensors. PLE tables and stacked vision layers use range-sized destination
-buffers. DCP deserializes whole source chunks, which are included in the
-preflight memory reservation. The mapping module selects supported layouts from
+buffers. Large uncompressed DCP chunks use bounded range reads; smaller chunks
+use the DCP loader and reserve its deserialization buffers. The mapping module selects supported layouts from
 the HF configuration and rejects unsupported architectures or tensors.
 
 Input batches default to 2 GiB and use four concurrent file readers. The memory
@@ -45,6 +45,7 @@ if __package__ in (None, ""):
 
 from relax.utils.logging_utils import get_logger
 from scripts.tools.convert_checkpoint_mapping import Conversion, TensorSlice, build_conversions, model_key
+from scripts.tools.convert_checkpoint_reader import READ_BLOCK_BYTES, prepare_range_reads, read_tensor_range
 
 
 logger = get_logger(__name__)
@@ -158,11 +159,25 @@ def check_chunks(key: str, metadata: Any) -> None:
             active.append((start, end))
 
 
-def make_reader(checkpoint: Path, read_workers: int) -> Any:
+def make_reader(checkpoint: Path, read_workers: int, range_records: dict[Any, Any] | None = None) -> Any:
     import torch
     from torch.distributed.checkpoint import FileSystemReader
 
     class ParallelReader(FileSystemReader):
+        def read_file(self, plan: Any, planner: Any) -> Any:
+            regular = []
+            for request in plan.items:
+                record = (range_records or {}).get(request.storage_index)
+                if record is None:
+                    regular.append(request)
+                else:
+                    info = self.storage_data[request.storage_index]
+                    with (checkpoint / info.relative_path).open("rb") as stream:
+                        target = planner.resolve_tensor(request).detach()
+                        read_tensor_range(stream, record, request, target)
+                        planner.commit_tensor(request, target)
+            return super().read_data(replace(plan, items=regular), planner)
+
         def read_data(self, plan: Any, planner: Any) -> Any:
             files: dict[str, list[Any]] = {}
             for request in plan.items:
@@ -171,14 +186,15 @@ def make_reader(checkpoint: Path, read_workers: int) -> Any:
             for requests in files.values():
                 requests.sort(key=lambda request: self.storage_data[request.storage_index].offset)
             if read_workers == 1 or len(files) <= 1:
-                return super().read_data(
+                return self.read_file(
                     replace(plan, items=[item for requests in files.values() for item in requests]), planner
                 )
             # Each worker owns its file handle. Validated chunks write disjoint
             # destination ranges; SlicePlanner has no mutable commit state.
-            read = super().read_data
             with ThreadPoolExecutor(max_workers=read_workers) as pool:
-                futures = [pool.submit(read, replace(plan, items=requests), planner) for requests in files.values()]
+                futures = [
+                    pool.submit(self.read_file, replace(plan, items=requests), planner) for requests in files.values()
+                ]
                 for future in futures:
                     future.result().wait()
             result = torch.futures.Future()
@@ -220,31 +236,46 @@ def plan_batches(
 
 
 def _reader_workspace(
-    jobs: list[Conversion], tensors: dict[str, Any], storage_data: dict[Any, Any], read_workers: int
+    jobs: list[Conversion],
+    tensors: dict[str, Any],
+    storage_data: dict[Any, Any],
+    read_workers: int,
+    range_records: dict[Any, Any] | None = None,
 ) -> Callable[[list[int]], int]:
     import torch
 
-    chunks = {
-        key: max(math.prod(chunk.sizes) for chunk in value.chunks)
+    chunk_bytes = {
+        (key, tuple(chunk.offsets)): math.prod(chunk.sizes)
         * torch.empty((), dtype=value.properties.dtype).element_size()
         for key, value in tensors.items()
+        for chunk in value.chunks
     }
+    chunks = dict.fromkeys(tensors, 0)
     archives = dict.fromkeys(tensors, 0)
+    ranged: set[str] = set()
     files: dict[str, set[str]] = {key: set() for key in tensors}
     for index, info in storage_data.items():
         if index.fqn in tensors:
-            archives[index.fqn] = max(archives[index.fqn], info.length)
+            if index in (range_records or {}):
+                ranged.add(index.fqn)
+            else:
+                chunks[index.fqn] = max(chunks[index.fqn], chunk_bytes[index.fqn, tuple(index.offset)])
+                archives[index.fqn] = max(archives[index.fqn], info.length)
             files[index.fqn].add(info.relative_path)
     job_chunks = [max(chunks[item.key] for item in job.inputs) for job in jobs]
     job_archives = [max(archives[item.key] for item in job.inputs) for job in jobs]
     job_files = [set().union(*(files[item.key] for item in job.inputs)) for job in jobs]
+    job_ranges = [any(item.key in ranged for item in job.inputs) for job in jobs]
 
     def workspace(batch: list[int]) -> int:
         readers = min(read_workers, len(set().union(*(job_files[i] for i in batch))))
         # A reader may retain the previous chunk while deserializing the next.
         # Include every chunk of each key, even for partial tensor slices, and
         # reserve only for files this batch can actually read concurrently.
-        return readers * (2 * max(job_chunks[i] for i in batch) + max(job_archives[i] for i in batch))
+        return readers * max(
+            2 * max(job_chunks[i] for i in batch) + max(job_archives[i] for i in batch),
+            READ_BLOCK_BYTES if any(job_ranges[i] for i in batch) else 0,
+        )
 
     return workspace
 
@@ -488,6 +519,10 @@ def export_checkpoint(
         raise ValueError("Checkpoint contains no supported model tensors")
     for key, value in tensors.items():
         check_chunks(key, value)
+    range_records = prepare_range_reads(checkpoint, metadata, tensors)
+    if range_records:
+        reader = make_reader(checkpoint, read_workers, range_records)
+        reader.read_metadata = lambda: metadata
     weight_map, schema = read_hf_schema(model)
     jobs = build_conversions(tensors, config, schema)
     expected: dict[str, tuple[tuple[int, ...], Any]] = {}
@@ -551,7 +586,7 @@ def export_checkpoint(
     for name in missing:
         fallback_files.setdefault(weight_map[name], []).append(name)
     copy_buffer_bytes = min(64 * 1024**2, max((math.prod(schema[key]["shape"]) * 8 for key in missing), default=0))
-    read_workspace = _reader_workspace(jobs, tensors, metadata.storage_data, read_workers)
+    read_workspace = _reader_workspace(jobs, tensors, metadata.storage_data, read_workers, range_records)
     batches = plan_batches(jobs, input_bytes, extra_bytes, batch_bytes, memory_budget, read_workspace)
     batch_read_buffers = [read_workspace(batch) for batch in batches]
     batch_inputs = [sum(input_bytes[i] for i in batch) for batch in batches]
@@ -581,6 +616,7 @@ def export_checkpoint(
         "batch_bytes": batch_bytes,
         "peak_batch_input_bytes": max(sum(input_bytes[i] for i in batch) for batch in batches),
         "read_workers": read_workers,
+        "range_read_chunks": len(range_records),
         "read_buffer_bytes": max(batch_read_buffers),
         "shard_bytes": shard_bytes,
         "planned_buffer_bytes": reservation,

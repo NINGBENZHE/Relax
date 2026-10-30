@@ -19,6 +19,7 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 from torch.distributed.checkpoint.metadata import ChunkStorageMetadata, TensorProperties, TensorStorageMetadata
 
+from scripts.tools import convert_checkpoint_reader as range_reader
 from scripts.tools import convert_checkpoint_to_hf_cpu as exporter
 from scripts.tools.convert_checkpoint_mapping import Conversion, TensorSlice
 from scripts.tools.convert_checkpoint_to_hf_cpu import (
@@ -420,19 +421,24 @@ def test_cpu_export_missing_weights_require_explicit_group(tmp_path: Path) -> No
 
 
 @pytest.mark.parametrize("read_workers", [1, 4])
+@pytest.mark.parametrize("ranged", [False, True])
+@pytest.mark.parametrize("dimension", [0, 1])
 @_cpu_only
-def test_cpu_dcp_partial_read_crosses_source_chunks(tmp_path: Path, read_workers: int) -> None:
+def test_cpu_dcp_partial_read_crosses_source_chunks(
+    tmp_path: Path, read_workers: int, ranged: bool, dimension: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Write an actual DCP archive with two persistent chunks, as TP shards do.
     from torch.distributed.checkpoint import DefaultSavePlanner
     from torch.distributed.checkpoint.planner import SavePlan, WriteItem, WriteItemType
     from torch.distributed.checkpoint.planner_helpers import _create_write_item_for_tensor
 
-    tensor = torch.arange(24.0).reshape(8, 3)
+    tensor = torch.arange(64, dtype=torch.bfloat16).reshape(8, 8)
 
     class ChunkPlanner(DefaultSavePlanner):
         def create_local_plan(self) -> SavePlan:
             items = []
-            for index, part in enumerate(tensor.chunk(2)):
+            for index, part in enumerate(tensor.chunk(2, dim=dimension)):
+                offset = (index * 4, 0) if dimension == 0 else (0, index * 4)
                 item = _create_write_item_for_tensor("table", part)
                 # MetadataIndex is frozen; create one with the global offset.
                 from torch.distributed.checkpoint.metadata import MetadataIndex
@@ -440,19 +446,19 @@ def test_cpu_dcp_partial_read_crosses_source_chunks(tmp_path: Path, read_workers
                 item = replace(
                     item,
                     type=WriteItemType.SHARD,
-                    index=MetadataIndex("table", (index * 4, 0)),
+                    index=MetadataIndex("table", offset),
                     tensor_data=replace(
                         item.tensor_data,
                         size=tensor.size(),
-                        chunk=ChunkStorageMetadata(torch.Size((index * 4, 0)), part.size()),
+                        chunk=ChunkStorageMetadata(torch.Size(offset), part.size()),
                     ),
                 )
                 items.append(item)
             return SavePlan(items)
 
         def resolve_data(self, write_item: WriteItem) -> torch.Tensor:
-            start = write_item.index.offset[0]
-            return tensor[start : start + 4].clone()
+            start = write_item.index.offset[dimension]
+            return tensor.narrow(dimension, start, 4).clone()
 
     dcp.save(
         {"table": tensor},
@@ -462,11 +468,106 @@ def test_cpu_dcp_partial_read_crosses_source_chunks(tmp_path: Path, read_workers
     )
     reader = make_reader(tmp_path, read_workers)
     metadata = reader.read_metadata()
+    if ranged:
+        monkeypatch.setattr(range_reader, "RANGE_READ_THRESHOLD", 1)
+        monkeypatch.setattr(range_reader, "READ_BLOCK_BYTES", 8)
+        records = range_reader.prepare_range_reads(tmp_path, metadata, metadata.state_dict_metadata)
+        assert len(records) == 2
+        reader = make_reader(tmp_path, read_workers, records)
+
+        def reject_full_load(*args: Any, **kwargs: Any) -> None:
+            raise AssertionError("Range reads must not deserialize the full tensor")
+
+        monkeypatch.setattr(torch, "load", reject_full_load)
     assert len(metadata.state_dict_metadata["table"].chunks) == 2
     assert len({info.relative_path for info in metadata.storage_data.values()}) == 2
     check_chunks("table", metadata.state_dict_metadata["table"])
-    actual = load_slices(reader, (TensorSlice("table", (3, 3), (3, 0)),), metadata)["table"]
-    assert torch.equal(actual, tensor[3:6])
+    actual = load_slices(reader, (TensorSlice("table", (3, 3), (3, 3)),), metadata)["table"]
+    assert torch.equal(actual, tensor[3:6, 3:6])
+
+
+@_cpu_only
+def test_cpu_export_round_trip_with_range_reads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    checkpoint, model, expected = _fixture(tmp_path)
+    monkeypatch.setattr(range_reader, "RANGE_READ_THRESHOLD", 1)
+    result = export_checkpoint(checkpoint, model, tmp_path / "export", shard_bytes=512)
+    assert result["range_read_chunks"] > 0
+    index = json.loads((tmp_path / "export/model.safetensors.index.json").read_text())["weight_map"]
+    for key, tensor in expected.items():
+        with safe_open(tmp_path / "export" / index[key], framework="pt", device="cpu") as handle:
+            assert torch.equal(handle.get_tensor(key), tensor), key
+
+
+@pytest.mark.parametrize("truncate", [False, True])
+@_cpu_only
+def test_cpu_range_read_preserves_storage_and_archive_offsets(tmp_path: Path, truncate: bool) -> None:
+    tensor = torch.arange(64, dtype=torch.bfloat16).reshape(8, 8)[2:6]
+    path = tmp_path / "data.distcp"
+    with path.open("wb") as stream:
+        stream.write(b"archive-prefix" * 13)
+        offset = stream.tell()
+        torch.save(tensor, stream)
+        length = stream.tell() - offset
+    record = range_reader.tensor_record(
+        path, SimpleNamespace(offset=offset, length=length), tuple(tensor.shape), tensor.dtype
+    )
+    target = torch.empty((2, 3), dtype=tensor.dtype)
+    request = SimpleNamespace(storage_offsets=(1, 3), lengths=(2, 3))
+    if truncate:
+        with path.open("r+b") as stream:
+            stream.truncate(record.offset + 8)
+        with path.open("rb") as stream, pytest.raises(ValueError, match="Truncated"):
+            range_reader.read_tensor_range(stream, record, request, target)
+    else:
+        with path.open("rb") as stream:
+            range_reader.read_tensor_range(stream, record, request, target)
+        assert torch.equal(target, tensor[1:3, 3:6])
+
+
+@pytest.mark.parametrize("layout", ["compressed", "transposed"])
+@_cpu_only
+def test_cpu_range_read_keeps_regular_loader_for_other_archives(
+    tmp_path: Path, layout: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import io
+    import zipfile
+
+    tensor = torch.arange(64.0).reshape(8, 8).t()
+    dcp.save({"table": tensor}, checkpoint_id=tmp_path, no_dist=True)
+    reader = make_reader(tmp_path, 1)
+    metadata = reader.read_metadata()
+    index, info = next(iter(metadata.storage_data.items()))
+    archive = io.BytesIO()
+    torch.save(tensor, archive)
+    if layout == "compressed":
+        compressed = io.BytesIO()
+        with zipfile.ZipFile(archive) as source, zipfile.ZipFile(compressed, "w", zipfile.ZIP_DEFLATED) as target:
+            for entry in source.infolist():
+                target.writestr(entry.filename, source.read(entry))
+        archive = compressed
+    (tmp_path / info.relative_path).write_bytes(archive.getvalue())
+    metadata.storage_data[index] = replace(info, offset=0, length=len(archive.getvalue()))
+    monkeypatch.setattr(range_reader, "RANGE_READ_THRESHOLD", 1)
+    records = range_reader.prepare_range_reads(tmp_path, metadata, metadata.state_dict_metadata)
+    assert not records
+    reader.read_metadata = lambda: metadata
+    actual = load_slices(reader, (TensorSlice("table", (3, 3), (3, 3)),), metadata)["table"]
+    assert torch.equal(actual, tensor[3:6, 3:6])
+
+
+@pytest.mark.parametrize("corruption", ["shape", "truncated"])
+@_cpu_only
+def test_cpu_range_read_rejects_invalid_archive_descriptors(tmp_path: Path, corruption: str) -> None:
+    tensor = torch.arange(64.0).reshape(8, 8)
+    path = tmp_path / "data.distcp"
+    torch.save(tensor, path)
+    length = path.stat().st_size
+    shape = (4, 16) if corruption == "shape" else tuple(tensor.shape)
+    if corruption == "truncated":
+        with path.open("r+b") as stream:
+            stream.truncate(length - 1)
+    with pytest.raises(ValueError, match="descriptor|Truncated"):
+        range_reader.tensor_record(path, SimpleNamespace(offset=0, length=length), shape, tensor.dtype)
 
 
 @_cpu_only
