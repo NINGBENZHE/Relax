@@ -170,8 +170,8 @@ print(json.dumps(runtime))
 PYRUNTIME
 )
 
-# Earlier stages retain more in-flight activations. The measured final-stage
-# headroom permits more decoder layers alongside MTP, the output head and loss.
+# Keep PP0's vision/PLE memory budget while moving decoder work from PP3,
+# which also runs MTP and the output head, to the two middle stages.
 # PIPELINE_LAYOUT can override the layer allocation for a different workload.
 # DP = 32 / TP2 / PP4 / CP1 = 4; PLE and the vision frontend stay on PP0.
 PARALLEL_ARGS=(
@@ -180,7 +180,7 @@ PARALLEL_ARGS=(
     --context-parallel-size 1
     --expert-model-parallel-size 8
     --expert-tensor-parallel-size 1
-    --pipeline-model-parallel-layout "${PIPELINE_LAYOUT:-Et*10|t*12|t*12|t*14mL}"
+    --pipeline-model-parallel-layout "${PIPELINE_LAYOUT:-Et*10|t*14|t*14|t*10mL}"
     --sequence-parallel
     --moe-token-dispatcher-type flex
     --moe-flex-dispatcher-backend hybridep
@@ -198,10 +198,7 @@ PARALLEL_ARGS=(
 )
 
 # Relax takes an integer interval and always saves on the final step.
-SAVE_INTERVAL="${SAVE_INTERVAL:-last}"
-if [[ "${SAVE_INTERVAL}" == last ]]; then
-    SAVE_INTERVAL=9223372036854775807
-fi
+SAVE_INTERVAL="${SAVE_INTERVAL:-100}"
 
 CKPT_ARGS=(
     --hf-checkpoint "${MODEL_DIR}"

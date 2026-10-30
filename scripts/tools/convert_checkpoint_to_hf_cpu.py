@@ -7,6 +7,15 @@ tensors. PLE tables and stacked vision layers use range-sized destination
 buffers. DCP deserializes whole source chunks, which are included in the
 preflight memory reservation. The mapping module selects supported layouts from
 the HF configuration and rejects unsupported architectures or tensors.
+
+Input batches default to 2 GiB and use four concurrent file readers. The memory
+budget can split batches further; an indivisible conversion can exceed the batch
+target but must still fit the budget. --cpu-threads controls tensor operations,
+independently of --read-workers. One batch is prefetched when the memory budget
+allows it. --no-prefetch disables overlap. Missing frozen tensors stream through
+a bounded copy buffer. Load and write work can overlap; load_wait measures the
+main thread's wait. Write time is included in append/frozen/finalize, and
+preflight is excluded from seconds.
 """
 
 from __future__ import annotations
@@ -23,6 +32,10 @@ import struct
 import sys
 import tempfile
 import time
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +44,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from relax.utils.logging_utils import get_logger
-from scripts.tools.convert_checkpoint_mapping import TensorSlice, build_conversions, model_key
+from scripts.tools.convert_checkpoint_mapping import Conversion, TensorSlice, build_conversions, model_key
 
 
 logger = get_logger(__name__)
@@ -76,6 +89,21 @@ def resolve_checkpoint(path: Path) -> Path:
     return path.resolve()
 
 
+def _read_hf_header(path: Path) -> tuple[int, dict[str, Any]]:
+    from safetensors import safe_open
+
+    # The official parser checks dtypes, offsets, holes and payload lengths
+    # without materializing tensors. Raw copies must retain these checks.
+    with safe_open(path, framework="pt", device="cpu"):
+        pass
+    with path.open("rb") as handle:
+        size = struct.unpack("<Q", handle.read(8))[0]
+        if not 0 < size < 100_000_000:
+            raise ValueError(f"Invalid safetensors header: {path.name}")
+        header = json.loads(handle.read(size))
+    return size + 8, header
+
+
 def read_hf_schema(path: Path) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
     index = path / "model.safetensors.index.json"
     weight_map = json.loads(index.read_text())["weight_map"] if index.is_file() else None
@@ -85,11 +113,7 @@ def read_hf_schema(path: Path) -> tuple[dict[str, str], dict[str, dict[str, Any]
     for filename in filenames:
         if Path(filename).name != filename:
             raise ValueError(f"Expected a flat HF shard filename: {filename}")
-        with (path / filename).open("rb") as handle:
-            size = struct.unpack("<Q", handle.read(8))[0]
-            if not 0 < size < 100_000_000:
-                raise ValueError(f"Invalid safetensors header: {filename}")
-            header = json.loads(handle.read(size))
+        _, header = _read_hf_header(path / filename)
         for name, entry in header.items():
             if name == "__metadata__":
                 continue
@@ -97,8 +121,6 @@ def read_hf_schema(path: Path) -> tuple[dict[str, str], dict[str, dict[str, Any]
                 raise ValueError(f"Duplicate HF tensor: {name}")
             schema[name] = {"shape": entry["shape"], "dtype": entry["dtype"]}
             actual_map[name] = filename
-            if entry["data_offsets"][1] + size + 8 > (path / filename).stat().st_size:
-                raise ValueError(f"Truncated HF shard: {filename}")
     if weight_map is not None and weight_map != actual_map:
         raise ValueError("HF index does not match safetensors headers")
     if not schema:
@@ -136,12 +158,106 @@ def check_chunks(key: str, metadata: Any) -> None:
             active.append((start, end))
 
 
+def make_reader(checkpoint: Path, read_workers: int) -> Any:
+    import torch
+    from torch.distributed.checkpoint import FileSystemReader
+
+    class ParallelReader(FileSystemReader):
+        def read_data(self, plan: Any, planner: Any) -> Any:
+            files: dict[str, list[Any]] = {}
+            for request in plan.items:
+                info = self.storage_data[request.storage_index]
+                files.setdefault(info.relative_path, []).append(request)
+            for requests in files.values():
+                requests.sort(key=lambda request: self.storage_data[request.storage_index].offset)
+            if read_workers == 1 or len(files) <= 1:
+                return super().read_data(
+                    replace(plan, items=[item for requests in files.values() for item in requests]), planner
+                )
+            # Each worker owns its file handle. Validated chunks write disjoint
+            # destination ranges; SlicePlanner has no mutable commit state.
+            read = super().read_data
+            with ThreadPoolExecutor(max_workers=read_workers) as pool:
+                futures = [pool.submit(read, replace(plan, items=requests), planner) for requests in files.values()]
+                for future in futures:
+                    future.result().wait()
+            result = torch.futures.Future()
+            result.set_result(None)
+            return result
+
+    return ParallelReader(checkpoint)
+
+
+def plan_batches(
+    jobs: list[Conversion],
+    input_bytes: list[int],
+    extra_bytes: list[int],
+    batch_bytes: int,
+    memory_budget: int,
+    read_buffer_bytes: int | Callable[[list[int]], int],
+) -> list[list[int]]:
+    batches: list[list[int]] = []
+    batch: list[int] = []
+    keys: set[str] = set()
+    size = extra = 0
+    for index, job in enumerate(jobs):
+        incoming = {item.key for item in job.inputs}
+        read_bytes = read_buffer_bytes(batch + [index]) if callable(read_buffer_bytes) else read_buffer_bytes
+        if batch and (
+            keys & incoming
+            or size + input_bytes[index] > batch_bytes
+            or size + input_bytes[index] + max(extra, extra_bytes[index]) + read_bytes > memory_budget
+        ):
+            batches.append(batch)
+            batch, keys, size, extra = [], set(), 0, 0
+        batch.append(index)
+        keys.update(incoming)
+        size += input_bytes[index]
+        extra = max(extra, extra_bytes[index])
+    if batch:
+        batches.append(batch)
+    return batches
+
+
+def _reader_workspace(
+    jobs: list[Conversion], tensors: dict[str, Any], storage_data: dict[Any, Any], read_workers: int
+) -> Callable[[list[int]], int]:
+    import torch
+
+    chunks = {
+        key: max(math.prod(chunk.sizes) for chunk in value.chunks)
+        * torch.empty((), dtype=value.properties.dtype).element_size()
+        for key, value in tensors.items()
+    }
+    archives = dict.fromkeys(tensors, 0)
+    files: dict[str, set[str]] = {key: set() for key in tensors}
+    for index, info in storage_data.items():
+        if index.fqn in tensors:
+            archives[index.fqn] = max(archives[index.fqn], info.length)
+            files[index.fqn].add(info.relative_path)
+    job_chunks = [max(chunks[item.key] for item in job.inputs) for job in jobs]
+    job_archives = [max(archives[item.key] for item in job.inputs) for job in jobs]
+    job_files = [set().union(*(files[item.key] for item in job.inputs)) for job in jobs]
+
+    def workspace(batch: list[int]) -> int:
+        readers = min(read_workers, len(set().union(*(job_files[i] for i in batch))))
+        # A reader may retain the previous chunk while deserializing the next.
+        # Include every chunk of each key, even for partial tensor slices, and
+        # reserve only for files this batch can actually read concurrently.
+        return readers * (2 * max(job_chunks[i] for i in batch) + max(job_archives[i] for i in batch))
+
+    return workspace
+
+
 def load_slices(reader: Any, items: tuple[TensorSlice, ...], metadata: Any) -> dict[str, Any]:
     import torch
     import torch.distributed.checkpoint as dcp
     from torch.distributed.checkpoint.metadata import ChunkStorageMetadata
     from torch.distributed.checkpoint.planner import LoadPlan
     from torch.distributed.checkpoint.planner_helpers import create_read_items_for_chunk_list
+
+    if len({item.key for item in items}) != len(items):
+        raise ValueError("A load batch must contain only one slice per checkpoint key")
 
     class SlicePlanner(dcp.DefaultLoadPlanner):
         def resolve_tensor(self, read_item: Any) -> Any:
@@ -182,6 +298,8 @@ class ShardWriter:
         self.weight_map: dict[str, str] = {}
         self.total_bytes = 0
         self.files: list[str] = []
+        self.seconds = 0.0
+        self.copy_read_seconds = 0.0
 
     def add(self, name: str, tensor: Any) -> None:
         import torch
@@ -208,7 +326,9 @@ class ShardWriter:
         if not self.pending:
             return
         filename = f"shard-{len(self.files) + 1:05d}.safetensors"
+        started = time.monotonic()
         save_file(self.pending, self.path / filename, metadata={"format": "pt"})
+        self.seconds += time.monotonic() - started
         self.files.append(filename)
         self.weight_map.update(dict.fromkeys(self.pending, filename))
         self.pending.clear()
@@ -225,6 +345,71 @@ class ShardWriter:
         (self.path / "model.safetensors.index.json").write_text(
             json.dumps({"metadata": {"total_size": self.total_bytes}, "weight_map": self.weight_map}, indent=2) + "\n"
         )
+
+    def copy_frozen(
+        self, model: Path, files: dict[str, list[str]], schema: dict[str, dict[str, Any]], buffer_bytes: int
+    ) -> None:
+        self.flush()
+        buffer = bytearray(buffer_bytes)
+        ranges: list[tuple[str, Path, int, int]] = []
+        size = 0
+        seen = set(self.weight_map)
+        for filename, names in files.items():
+            start, header = _read_hf_header(model / filename)
+            for name in sorted(names, key=lambda key: header[key]["data_offsets"][0]):
+                entry = header[name]
+                if {key: entry[key] for key in ("shape", "dtype")} != schema[name] or name in seen:
+                    raise ValueError(f"Frozen tensor schema changed or key duplicated: {name}")
+                seen.add(name)
+                begin, end = entry["data_offsets"]
+                if ranges and size + end - begin > self.shard_bytes:
+                    self._copy_ranges(ranges, schema, buffer)
+                    ranges, size = [], 0
+                ranges.append((name, model / filename, start + begin, end - begin))
+                size += end - begin
+                if size >= self.shard_bytes:
+                    self._copy_ranges(ranges, schema, buffer)
+                    ranges, size = [], 0
+        if ranges:
+            self._copy_ranges(ranges, schema, buffer)
+
+    def _copy_ranges(
+        self, ranges: list[tuple[str, Path, int, int]], schema: dict[str, dict[str, Any]], buffer: bytearray
+    ) -> None:
+        header: dict[str, Any] = {"__metadata__": {"format": "pt"}}
+        size = 0
+        for name, _, _, length in ranges:
+            header[name] = {**schema[name], "data_offsets": [size, size + length]}
+            size += length
+        raw = json.dumps(header, separators=(",", ":")).encode("utf-8")
+        raw += b" " * (-len(raw) % 8)
+        filename = f"shard-{len(self.files) + 1:05d}.safetensors"
+        view = memoryview(buffer)
+        with (self.path / filename).open("wb") as target, ExitStack() as sources:
+            started = time.monotonic()
+            target.write(struct.pack("<Q", len(raw)))
+            target.write(raw)
+            self.seconds += time.monotonic() - started
+            previous = source = None
+            for name, path, offset, remaining in ranges:
+                if path != previous:
+                    sources.close()
+                    source = sources.enter_context(path.open("rb"))
+                    previous = path
+                source.seek(offset)
+                while remaining:
+                    started = time.monotonic()
+                    count = source.readinto(view[: min(remaining, len(buffer))])
+                    self.copy_read_seconds += time.monotonic() - started
+                    if not count:
+                        raise ValueError(f"Truncated frozen tensor payload: {name}")
+                    started = time.monotonic()
+                    target.write(view[:count])
+                    self.seconds += time.monotonic() - started
+                    remaining -= count
+        self.files.append(filename)
+        self.weight_map.update(dict.fromkeys((item[0] for item in ranges), filename))
+        self.total_bytes += size
 
 
 def _fallback_group(key: str) -> str | None:
@@ -267,18 +452,20 @@ def export_checkpoint(
     *,
     shard_bytes: int = 2 * 1024**3,
     memory_budget: int = 64 * 1024**3,
+    batch_bytes: int = 2 * 1024**3,
+    read_workers: int = 4,
+    prefetch: bool = True,
     allow_base_fallback: tuple[str, ...] = (),
     dry_run: bool = False,
 ) -> dict[str, Any]:
     import torch
-    import torch.distributed.checkpoint as dcp
-    from safetensors import safe_open
     from torch.distributed.checkpoint.metadata import TensorStorageMetadata
 
     if torch.cuda.is_initialized() or torch.distributed.is_initialized():
         raise RuntimeError("CPU conversion must run without CUDA or a distributed process group")
-    if shard_bytes <= 0 or memory_budget <= 0:
-        raise ValueError("Shard size and memory budget must be positive")
+    preflight_started = time.monotonic()
+    if min(shard_bytes, memory_budget, batch_bytes, read_workers) <= 0:
+        raise ValueError("Shard size, memory budget, batch size and read workers must be positive")
     checkpoint, model, output = resolve_checkpoint(checkpoint), model.resolve(), output.resolve()
     if output.exists():
         raise FileExistsError(f"Output already exists: {output}; choose a fresh output directory")
@@ -288,7 +475,7 @@ def export_checkpoint(
     if config.get("quantization_config") or config.get("text_config", {}).get("quantization_config"):
         raise ValueError("Quantized source models are not supported")
     fingerprint = hashlib.sha256((checkpoint / ".metadata").read_bytes()).hexdigest()
-    reader = dcp.FileSystemReader(checkpoint)
+    reader = make_reader(checkpoint, read_workers)
     metadata = reader.read_metadata()
     # Metadata can be large; each partial load reuses this exact snapshot.
     reader.read_metadata = lambda: metadata
@@ -306,7 +493,8 @@ def export_checkpoint(
     expected: dict[str, tuple[tuple[int, ...], Any]] = {}
     expected_schema = dict(schema)
     dtype_changes = {}
-    max_input = planned_tensor_buffers = 0
+    input_bytes: list[int] = []
+    extra_bytes: list[int] = []
     for job in jobs:
         for item in job.inputs:
             full_shape = tensors[item.key].size
@@ -323,7 +511,7 @@ def export_checkpoint(
             item.key: torch.empty(item.shape, dtype=tensors[item.key].properties.dtype, device="meta")
             for item in job.inputs
         }
-        max_input = max(max_input, sum(t.numel() * t.element_size() for t in state.values()))
+        input_bytes.append(sum(t.numel() * t.element_size() for t in state.values()))
         converted = job.apply(state, config)
         # Meta tensors preserve aliases. Count each allocation once, including
         # when the converted tensors share storage with their DCP input.
@@ -335,9 +523,12 @@ def export_checkpoint(
             tensor.numel() * tensor.element_size() for tensor in converted.values() if _needs_owned_copy(tensor)
         )
         largest_output = max(tensor.numel() * tensor.element_size() for tensor in converted.values())
-        planned_tensor_buffers = max(
-            planned_tensor_buffers,
-            sum(storages.values()) + owned_copy_bytes + shard_bytes + max(shard_bytes, largest_output),
+        extra_bytes.append(
+            sum(storages.values())
+            - input_bytes[-1]
+            + owned_copy_bytes
+            + shard_bytes
+            + max(shard_bytes, largest_output)
         )
         for name, tensor in converted.items():
             if name in expected or name not in schema or list(tensor.shape) != schema[name]["shape"]:
@@ -356,20 +547,24 @@ def export_checkpoint(
         raise ValueError(
             f"Missing {len(forbidden)} HF tensors; base fallback is disabled for these keys: {forbidden[:5]}"
         )
-    # DCP's official reader deserializes each source chunk before slicing. Account
-    # for that workspace too; partial loading does not bound original chunk size.
-    chunk_bytes = max(
-        math.prod(chunk.sizes) * torch.empty((), dtype=value.properties.dtype).element_size()
-        for value in tensors.values()
-        for chunk in value.chunks
-    )
-    archive_bytes = max(
-        (info.length for index, info in metadata.storage_data.items() if index.fqn in tensors), default=0
-    )
-    fallback_bytes = max((math.prod(schema[key]["shape"]) * 8 for key in missing), default=0)
+    fallback_files: dict[str, list[str]] = {}
+    for name in missing:
+        fallback_files.setdefault(weight_map[name], []).append(name)
+    copy_buffer_bytes = min(64 * 1024**2, max((math.prod(schema[key]["shape"]) * 8 for key in missing), default=0))
+    read_workspace = _reader_workspace(jobs, tensors, metadata.storage_data, read_workers)
+    batches = plan_batches(jobs, input_bytes, extra_bytes, batch_bytes, memory_budget, read_workspace)
+    batch_read_buffers = [read_workspace(batch) for batch in batches]
+    batch_inputs = [sum(input_bytes[i] for i in batch) for batch in batches]
+    batch_buffers = [size + max(extra_bytes[i] for i in batch) for size, batch in zip(batch_inputs, batches)]
+    overlap_buffers = [
+        current + following + read_bytes
+        for current, following, read_bytes in zip(batch_buffers, batch_inputs[1:], batch_read_buffers[1:])
+    ]
+    prefetch_after = [prefetch and size <= memory_budget for size in overlap_buffers]
     reservation = max(
-        planned_tensor_buffers + chunk_bytes + archive_bytes,
-        2 * fallback_bytes + shard_bytes + max(shard_bytes, fallback_bytes),
+        max(size + read_bytes for size, read_bytes in zip(batch_buffers, batch_read_buffers)),
+        max((size for size, enabled in zip(overlap_buffers, prefetch_after) if enabled), default=0),
+        copy_buffer_bytes,
     )
     report = {
         "checkpoint": str(checkpoint),
@@ -379,7 +574,15 @@ def export_checkpoint(
         "conversion_groups": len(jobs),
         "hf_tensors": len(schema),
         "base_fallback_keys": missing,
-        "max_input_bytes": max_input,
+        "max_input_bytes": max(input_bytes),
+        "load_batches": len(batches),
+        "prefetched_batches": sum(prefetch_after),
+        "copy_buffer_bytes": copy_buffer_bytes,
+        "batch_bytes": batch_bytes,
+        "peak_batch_input_bytes": max(sum(input_bytes[i] for i in batch) for batch in batches),
+        "read_workers": read_workers,
+        "read_buffer_bytes": max(batch_read_buffers),
+        "shard_bytes": shard_bytes,
         "planned_buffer_bytes": reservation,
         "memory_budget_bytes": memory_budget,
         "metadata_sha256": fingerprint,
@@ -395,23 +598,60 @@ def export_checkpoint(
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=output.name + ".incomplete-", dir=output.parent))
     started = time.monotonic()
+    timing = {"preflight": started - preflight_started, "load": 0.0, "load_wait": 0.0, "map": 0.0, "append": 0.0}
+
+    def load_batch(batch: list[int]) -> tuple[dict[str, Any], float]:
+        begin = time.monotonic()
+        state = load_slices(reader, tuple(item for i in batch for item in jobs[i].inputs), metadata)
+        return state, time.monotonic() - begin
+
     try:
         writer = ShardWriter(staging, shard_bytes)
-        for number, job in enumerate(jobs, 1):
-            state = load_slices(reader, job.inputs, metadata)
-            converted = job.apply(state, config)
-            for name in list(converted):
-                tensor = converted.pop(name)
-                if (tuple(tensor.shape), tensor.dtype) != expected[name]:
-                    raise ValueError(f"Conversion changed after preflight: {name}")
-                writer.add(name, tensor)
-                del tensor
-            del state, converted
-            if number % 20 == 0 or number == len(jobs):
-                logger.info("Converted %d/%d tensor groups", number, len(jobs))
-        for name in missing:
-            with safe_open(model / weight_map[name], framework="pt", device="cpu") as handle:
-                writer.add(name, handle.get_tensor(name).clone())
+        with ThreadPoolExecutor(max_workers=1) as loader:
+            future = None
+            for number, batch in enumerate(batches):
+                phase_started = time.monotonic()
+                state, elapsed = load_batch(batch) if future is None else future.result()
+                future = None
+                timing["load_wait"] += time.monotonic() - phase_started
+                timing["load"] += elapsed
+                if number < len(prefetch_after) and prefetch_after[number]:
+                    future = loader.submit(load_batch, batches[number + 1])
+                for i in batch:
+                    job = jobs[i]
+                    phase_started = time.monotonic()
+                    selected = {item.key: state.pop(item.key) for item in job.inputs}
+                    converted = job.apply(selected, config)
+                    del selected
+                    timing["map"] += time.monotonic() - phase_started
+                    phase_started = time.monotonic()
+                    for name in list(converted):
+                        tensor = converted.pop(name)
+                        if (tuple(tensor.shape), tensor.dtype) != expected[name]:
+                            raise ValueError(f"Conversion changed after preflight: {name}")
+                        writer.add(name, tensor)
+                        del tensor
+                    timing["append"] += time.monotonic() - phase_started
+                    del converted
+                del state
+                logger.info(
+                    "Converted %d/%d load batches (%d/%d tensor groups)",
+                    number + 1,
+                    len(batches),
+                    batch[-1] + 1,
+                    len(jobs),
+                )
+        phase_started = time.monotonic()
+        writer.flush()
+        timing["append"] += time.monotonic() - phase_started
+        timing["trained_export"] = time.monotonic() - started
+        logger.info("Trained export timing: %s", json.dumps(timing))
+        phase_started = time.monotonic()
+        if fallback_files:
+            writer.copy_frozen(model, fallback_files, schema, copy_buffer_bytes)
+        timing["append_frozen"] = time.monotonic() - phase_started
+        timing["frozen_read"] = writer.copy_read_seconds
+        phase_started = time.monotonic()
         _copy_assets(model, staging)
         writer.finish()
         _, actual = read_hf_schema(staging)
@@ -419,9 +659,12 @@ def export_checkpoint(
             raise ValueError("Final HF schema verification failed")
         if hashlib.sha256((checkpoint / ".metadata").read_bytes()).hexdigest() != fingerprint:
             raise RuntimeError("Checkpoint metadata changed during conversion")
+        timing["finalize"] = time.monotonic() - phase_started
+        timing["write"] = writer.seconds
         report.update(
             status="complete",
             seconds=time.monotonic() - started,
+            timing_seconds=timing,
             total_bytes=writer.total_bytes,
             peak_rss_bytes=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
             cuda_initialized=torch.cuda.is_initialized(),
@@ -450,6 +693,16 @@ def main() -> None:
         "--memory-budget-gb", type=float, default=64, help="Conservative tensor-buffer budget in GiB, not an RSS limit"
     )
     parser.add_argument("--cpu-threads", type=int, default=2)
+    parser.add_argument("--read-workers", type=int, default=4, help="Concurrent checkpoint file readers")
+    parser.add_argument(
+        "--no-prefetch", action="store_true", help="Disable memory-budgeted overlap of loading and writing"
+    )
+    parser.add_argument(
+        "--load-batch-size-gb",
+        type=float,
+        default=2,
+        help="Target input batch size in GiB, capped by the memory budget",
+    )
     parser.add_argument(
         "--allow-base-fallback",
         choices=("vision", "ple", "mtp"),
@@ -479,6 +732,9 @@ def main() -> None:
         args.output_dir,
         shard_bytes=int(args.max_shard_size_gb * 1024**3),
         memory_budget=int(args.memory_budget_gb * 1024**3),
+        batch_bytes=int(args.load_batch_size_gb * 1024**3),
+        read_workers=args.read_workers,
+        prefetch=not args.no_prefetch,
         allow_base_fallback=tuple(args.allow_base_fallback),
         dry_run=args.dry_run,
     )

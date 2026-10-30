@@ -4,8 +4,13 @@ import json
 import os
 import subprocess
 import sys
+import threading
+from collections.abc import Callable
 from dataclasses import replace
+from functools import wraps
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import torch
@@ -14,8 +19,52 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 from torch.distributed.checkpoint.metadata import ChunkStorageMetadata, TensorProperties, TensorStorageMetadata
 
-from scripts.tools.convert_checkpoint_mapping import TensorSlice
-from scripts.tools.convert_checkpoint_to_hf_cpu import check_chunks, export_checkpoint, load_slices, resolve_checkpoint
+from scripts.tools import convert_checkpoint_to_hf_cpu as exporter
+from scripts.tools.convert_checkpoint_mapping import Conversion, TensorSlice
+from scripts.tools.convert_checkpoint_to_hf_cpu import (
+    check_chunks,
+    export_checkpoint,
+    load_slices,
+    make_reader,
+    resolve_checkpoint,
+)
+
+
+def _cpu_only(test: Callable[..., None]) -> Callable[..., None]:
+    @wraps(test)
+    def run(*args: Any, **kwargs: Any) -> None:
+        if os.environ.get("_RELAX_CPU_EXPORT_TEST_CHILD") == "1":
+            assert not torch.cuda.is_available() and not torch.cuda.is_initialized()
+            assert not torch.distributed.is_initialized()
+            return test(*args, **kwargs)
+        if not (torch.cuda.is_available() or torch.cuda.is_initialized() or torch.distributed.is_initialized()):
+            return test(*args, **kwargs)
+        # GPU CI shares a process with tests that initialize CUDA/process groups.
+        # Keep the exporter's checks real and leave that parent state untouched.
+        current = os.environ["PYTEST_CURRENT_TEST"].rsplit(" (", 1)[0]
+        node = f"{Path(__file__).resolve()}::{current.split('::', 1)[1]}"
+        env = {**os.environ, "CUDA_VISIBLE_DEVICES": "", "_RELAX_CPU_EXPORT_TEST_CHILD": "1"}
+        for key in (
+            "RANK",
+            "WORLD_SIZE",
+            "LOCAL_RANK",
+            "LOCAL_WORLD_SIZE",
+            "MASTER_ADDR",
+            "MASTER_PORT",
+            "PYTEST_ADDOPTS",
+        ):
+            env.pop(key, None)
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", node, "--tb=short", "--show-capture=no"],
+            cwd=Path(__file__).resolve().parents[2],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    return run
 
 
 def _fixture(tmp_path: Path) -> tuple[Path, Path, dict[str, torch.Tensor]]:
@@ -114,7 +163,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, dict[str, torch.Tensor]]:
         state[f"vision_model.decoder.layers.self_attention.linear_qkv.{field}"] = torch.stack(layers)
     pair("vision_model.merger.patch_norm.weight", "model.visual.merger.norm.weight", torch.arange(4.0))
     state["optimizer.state.exp_avg"] = torch.ones(2)
-    dcp.save(state, checkpoint_id=checkpoint, no_dist=True)
+    dcp.save(state, storage_writer=dcp.FileSystemWriter(checkpoint, single_file_per_rank=False), no_dist=True)
     (checkpoint.parent / "latest_checkpointed_iteration.txt").write_text("7\n")
     base = {key: torch.zeros_like(value) for key, value in expected.items()}
     base[dst + "linear_attn.norm.weight"] = base[dst + "linear_attn.norm.weight"].to(torch.bfloat16)
@@ -122,10 +171,25 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, dict[str, torch.Tensor]]:
     return checkpoint, model, expected
 
 
-def test_cpu_export_round_trip_without_model_or_cuda(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "batch_bytes,read_workers,prefetch", [(128, 1, True), (1024**2, 4, True), (128, 4, False), (1024**2, 8, True)]
+)
+@_cpu_only
+def test_cpu_export_round_trip_without_model_or_cuda(
+    tmp_path: Path, batch_bytes: int, read_workers: int, prefetch: bool
+) -> None:
     checkpoint, model, expected = _fixture(tmp_path)
     output = tmp_path / "export"
-    report = export_checkpoint(checkpoint.parent, model, output, shard_bytes=512, memory_budget=1024**2)
+    report = export_checkpoint(
+        checkpoint.parent,
+        model,
+        output,
+        shard_bytes=512,
+        memory_budget=1024**2,
+        batch_bytes=batch_bytes,
+        read_workers=read_workers,
+        prefetch=prefetch,
+    )
     index = json.loads((output / "model.safetensors.index.json").read_text())
     assert set(index["weight_map"]) == set(expected)
     for name, value in expected.items():
@@ -134,6 +198,10 @@ def test_cpu_export_round_trip_without_model_or_cuda(tmp_path: Path) -> None:
             assert handle.get_tensor(name).dtype == value.dtype
     assert index["metadata"]["total_size"] == sum(t.numel() * t.element_size() for t in expected.values())
     assert report["max_input_bytes"] < 1024
+    assert report["peak_batch_input_bytes"] <= max(batch_bytes, report["max_input_bytes"])
+    assert report["planned_buffer_bytes"] <= report["memory_budget_bytes"]
+    if batch_bytes > 1024:
+        assert report["load_batches"] < report["conversion_groups"]
     assert not report["cuda_initialized"] and not report["distributed_initialized"]
     assert report["dtype_changes"]["model.language_model.layers.0.linear_attn.norm.weight"] == {
         "base": "BF16",
@@ -145,6 +213,7 @@ def test_cpu_export_round_trip_without_model_or_cuda(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("entrypoint", ["shell", "python", "module"])
+@_cpu_only
 def test_cpu_export_entrypoint_dry_run(tmp_path: Path, entrypoint: str) -> None:
     checkpoint, model, _ = _fixture(tmp_path)
     output = tmp_path / "export"
@@ -175,6 +244,7 @@ def test_cpu_export_entrypoint_dry_run(tmp_path: Path, entrypoint: str) -> None:
     assert not output.exists()
 
 
+@_cpu_only
 def test_cpu_export_parameter_layout_hc_ple_mtp_and_frozen_weights(tmp_path: Path) -> None:
     model, checkpoint, output = (tmp_path / name for name in ("model", "checkpoint", "output"))
     model.mkdir()
@@ -258,6 +328,7 @@ def test_cpu_export_parameter_layout_hc_ple_mtp_and_frozen_weights(tmp_path: Pat
 
 
 @pytest.mark.parametrize("mtp_layer", ["transformer_layer", "mtp_model_layer"])
+@_cpu_only
 def test_cpu_export_standard_norms_and_individual_mtp_experts(tmp_path: Path, mtp_layer: str) -> None:
     model, checkpoint, output = (tmp_path / name for name in ("model", "checkpoint", "output"))
     model.mkdir()
@@ -303,6 +374,7 @@ def test_cpu_export_standard_norms_and_individual_mtp_experts(tmp_path: Path, mt
 
 
 @pytest.mark.parametrize("failure", ["missing", "unknown", "memory", "existing"])
+@_cpu_only
 def test_cpu_export_rejects_invalid_inputs_before_write(tmp_path: Path, failure: str) -> None:
     checkpoint, model, expected = _fixture(tmp_path)
     output = tmp_path / "export"
@@ -331,6 +403,7 @@ def test_cpu_export_rejects_invalid_inputs_before_write(tmp_path: Path, failure:
         assert not output.exists()
 
 
+@_cpu_only
 def test_cpu_export_missing_weights_require_explicit_group(tmp_path: Path) -> None:
     checkpoint, model, expected = _fixture(tmp_path)
     name = "model.visual.patch_embed.proj.weight"
@@ -346,7 +419,9 @@ def test_cpu_export_missing_weights_require_explicit_group(tmp_path: Path) -> No
         assert torch.equal(handle.get_tensor(name), expected[name])
 
 
-def test_cpu_dcp_partial_read_crosses_source_chunks(tmp_path: Path) -> None:
+@pytest.mark.parametrize("read_workers", [1, 4])
+@_cpu_only
+def test_cpu_dcp_partial_read_crosses_source_chunks(tmp_path: Path, read_workers: int) -> None:
     # Write an actual DCP archive with two persistent chunks, as TP shards do.
     from torch.distributed.checkpoint import DefaultSavePlanner
     from torch.distributed.checkpoint.planner import SavePlan, WriteItem, WriteItemType
@@ -379,15 +454,270 @@ def test_cpu_dcp_partial_read_crosses_source_chunks(tmp_path: Path) -> None:
             start = write_item.index.offset[0]
             return tensor[start : start + 4].clone()
 
-    dcp.save({"table": tensor}, checkpoint_id=tmp_path, planner=ChunkPlanner(flatten_state_dict=False), no_dist=True)
-    reader = dcp.FileSystemReader(tmp_path)
+    dcp.save(
+        {"table": tensor},
+        storage_writer=dcp.FileSystemWriter(tmp_path, single_file_per_rank=False),
+        planner=ChunkPlanner(flatten_state_dict=False),
+        no_dist=True,
+    )
+    reader = make_reader(tmp_path, read_workers)
     metadata = reader.read_metadata()
     assert len(metadata.state_dict_metadata["table"].chunks) == 2
+    assert len({info.relative_path for info in metadata.storage_data.values()}) == 2
     check_chunks("table", metadata.state_dict_metadata["table"])
     actual = load_slices(reader, (TensorSlice("table", (3, 3), (3, 0)),), metadata)["table"]
     assert torch.equal(actual, tensor[3:6])
 
 
+@_cpu_only
+def test_cpu_export_parallel_read_failure_does_not_publish(tmp_path: Path) -> None:
+    from torch.distributed.checkpoint.api import CheckpointException
+
+    checkpoint, model, _ = _fixture(tmp_path)
+    metadata = dcp.FileSystemReader(checkpoint).read_metadata()
+    source = next(info for key, info in metadata.storage_data.items() if key.fqn.startswith("language_model."))
+    (checkpoint / source.relative_path).write_bytes(b"corrupt checkpoint")
+    output = tmp_path / "export"
+    with pytest.raises(CheckpointException):
+        export_checkpoint(checkpoint, model, output, shard_bytes=512, read_workers=4)
+    assert not output.exists()
+    assert not list(tmp_path.glob("export.incomplete-*/model.safetensors.index.json"))
+
+
+@_cpu_only
+def test_cpu_export_batching_respects_memory_budget(tmp_path: Path) -> None:
+    checkpoint, model, _ = _fixture(tmp_path)
+    output = tmp_path / "export"
+    single = export_checkpoint(checkpoint, model, output, shard_bytes=512, batch_bytes=1, prefetch=False, dry_run=True)
+    combined = export_checkpoint(checkpoint, model, output, shard_bytes=512, batch_bytes=1024**2, dry_run=True)
+    assert combined["planned_buffer_bytes"] > single["planned_buffer_bytes"]
+    bounded = export_checkpoint(
+        checkpoint,
+        model,
+        output,
+        shard_bytes=512,
+        batch_bytes=1024**2,
+        memory_budget=single["planned_buffer_bytes"],
+        dry_run=True,
+    )
+    assert bounded["planned_buffer_bytes"] <= single["planned_buffer_bytes"]
+    assert bounded["load_batches"] > combined["load_batches"]
+    assert bounded["prefetched_batches"] < bounded["load_batches"] - 1
+    serial = export_checkpoint(checkpoint, model, output, shard_bytes=512, read_workers=1, dry_run=True)
+    assert combined["read_buffer_bytes"] == 4 * serial["read_buffer_bytes"]
+    with pytest.raises(ValueError, match="Planned buffers"):
+        export_checkpoint(checkpoint, model, output, shard_bytes=512, memory_budget=single["planned_buffer_bytes"] - 1)
+    assert not list(tmp_path.glob("export.incomplete-*"))
+
+
+@_cpu_only
+def test_cpu_reader_workspace_counts_source_chunks_and_concurrent_files() -> None:
+    from torch.distributed.checkpoint.metadata import MetadataIndex
+
+    properties = TensorProperties(dtype=torch.float32)
+    tensors = {
+        name: TensorStorageMetadata(
+            properties, torch.Size((size,)), [ChunkStorageMetadata(torch.Size((0,)), torch.Size((size,)))]
+        )
+        for name, size in [("small", 4), ("large", 64), ("unused", 1024**3)]
+    }
+    storage = {
+        MetadataIndex(name, (0,)): SimpleNamespace(relative_path=name, length=length)
+        for name, length in [("small", 32), ("large", 512), ("unused", 8 * 1024**3)]
+    }
+    jobs = [Conversion((TensorSlice(name, (1,), (0,)),), (name,)) for name in ["small", "large"]]
+    workspace = exporter._reader_workspace(jobs, tensors, storage, read_workers=8)
+    # The one-element destination still needs the entire serialized source
+    # chunk, but a single source file cannot occupy eight reader threads.
+    assert workspace([0]) == 64
+    assert workspace([1]) == 1024
+    assert workspace([0, 1]) == 2048
+    storage[MetadataIndex("large", (0,))].relative_path = "small"
+    shared_file = exporter._reader_workspace(jobs, tensors, storage, read_workers=8)
+    assert shared_file([0, 1]) == 1024
+
+
+@_cpu_only
+def test_cpu_batch_plan_recomputes_reader_workspace_when_combining_files() -> None:
+    from torch.distributed.checkpoint.metadata import MetadataIndex
+
+    names = ["a", "b", "c"]
+    tensors = {
+        name: TensorStorageMetadata(
+            TensorProperties(dtype=torch.float32),
+            torch.Size((4,)),
+            [ChunkStorageMetadata(torch.Size((0,)), torch.Size((4,)))],
+        )
+        for name in names
+    }
+    storage = {MetadataIndex(name, (0,)): SimpleNamespace(relative_path=name, length=32) for name in names}
+    jobs = [Conversion((TensorSlice(name, (1,), (0,)),), (name,)) for name in names]
+    workspace = exporter._reader_workspace(jobs, tensors, storage, read_workers=8)
+    batches = exporter.plan_batches(jobs, [4, 4, 4], [0, 0, 0], 1024, 100, workspace)
+    assert batches == [[0], [1], [2]]
+    assert all(sum(4 for _ in batch) + workspace(batch) <= 100 for batch in batches)
+
+
+@pytest.mark.parametrize("failure", [None, "load", "write"])
+@_cpu_only
+def test_cpu_export_prefetch_overlaps_and_joins_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str | None
+) -> None:
+    checkpoint, model, _ = _fixture(tmp_path)
+    output = tmp_path / "export"
+    second_started, appending = threading.Event(), threading.Event()
+    lock = threading.Lock()
+    original_load, original_add = exporter.load_slices, exporter.ShardWriter.add
+    calls = active = peak = 0
+    first_append = True
+
+    def load(*args: Any, **kwargs: Any) -> dict[str, torch.Tensor]:
+        nonlocal calls, active, peak
+        with lock:
+            calls += 1
+            number = calls
+            active += 1
+            peak = max(peak, active)
+        try:
+            if number == 2:
+                second_started.set()
+                assert appending.wait(10), "Prefetch did not overlap output processing"
+                if failure == "load":
+                    raise OSError("prefetch failed")
+            return original_load(*args, **kwargs)
+        finally:
+            with lock:
+                active -= 1
+
+    def add(self: exporter.ShardWriter, name: str, tensor: torch.Tensor) -> None:
+        nonlocal first_append
+        if first_append:
+            first_append = False
+            assert second_started.wait(10), "Second batch was not prefetched"
+            appending.set()
+            if failure == "write":
+                raise OSError("write failed")
+        return original_add(self, name, tensor)
+
+    monkeypatch.setattr(exporter, "load_slices", load)
+    monkeypatch.setattr(exporter.ShardWriter, "add", add)
+    if failure:
+        with pytest.raises(OSError, match="failed"):
+            export_checkpoint(checkpoint, model, output, batch_bytes=1, shard_bytes=512)
+        assert not output.exists()
+        assert not list(tmp_path.glob("export.incomplete-*/model.safetensors.index.json"))
+    else:
+        result = export_checkpoint(checkpoint, model, output, batch_bytes=1, shard_bytes=512)
+        assert result["prefetched_batches"] == result["load_batches"] - 1
+    assert active == 0 and peak == 1
+
+
+@_cpu_only
+def test_cpu_export_streams_frozen_payloads_without_materializing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import safetensors
+
+    checkpoint, model, expected = _fixture(tmp_path)
+    frozen = {
+        "model.visual.large": torch.arange(257, dtype=torch.float32),
+        "model.visual.empty": torch.empty((0, 3), dtype=torch.bfloat16),
+        "model.visual.scalar": torch.tensor(-9, dtype=torch.int64),
+        "model.visual.整数": torch.tensor([5, -7], dtype=torch.int32),
+        "model.visual.boolean": torch.tensor([True, False]),
+    }
+    save_file(
+        {**{key: torch.zeros_like(value) for key, value in expected.items()}, **frozen}, model / "model.safetensors"
+    )
+    expected.update(frozen)
+
+    class MetadataOnly:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.handle = safe_open(*args, **kwargs)
+
+        def __enter__(self) -> "MetadataOnly":
+            self.handle.__enter__()
+            return self
+
+        def __exit__(self, *args: Any) -> Any:
+            return self.handle.__exit__(*args)
+
+        def get_tensor(self, name: str) -> torch.Tensor:
+            raise AssertionError(f"Frozen payload was materialized: {name}")
+
+    monkeypatch.setattr(safetensors, "safe_open", MetadataOnly)
+    output = tmp_path / "export"
+    result = export_checkpoint(
+        checkpoint, model, output, shard_bytes=128, memory_budget=1024**2, allow_base_fallback=("vision",)
+    )
+    assert result["copy_buffer_bytes"] <= 64 * 1024**2
+    index = json.loads((output / "model.safetensors.index.json").read_text())
+    assert index["metadata"]["total_size"] == sum(value.numel() * value.element_size() for value in expected.values())
+    assert index["weight_map"].keys() == expected.keys()
+    for name, value in expected.items():
+        with safe_open(output / index["weight_map"][name], framework="pt", device="cpu") as handle:
+            actual = handle.get_tensor(name)
+            assert actual.dtype == value.dtype and torch.equal(actual, value), name
+
+
+@pytest.mark.parametrize("corruption", ["offset", "length", "overlap", "dtype", "truncated"])
+@_cpu_only
+def test_cpu_export_rejects_invalid_source_headers_before_raw_copy(tmp_path: Path, corruption: str) -> None:
+    import struct
+
+    from safetensors import SafetensorError
+
+    checkpoint, model, _ = _fixture(tmp_path)
+    source = model / "model.safetensors"
+    data = source.read_bytes()
+    length = struct.unpack("<Q", data[:8])[0]
+    header, payload = json.loads(data[8 : 8 + length]), data[8 + length :]
+    entries = [entry for key, entry in header.items() if key != "__metadata__"]
+    if corruption == "offset":
+        entries[0]["data_offsets"][0] = -1
+    elif corruption == "length":
+        entries[0]["data_offsets"][1] += 1
+    elif corruption == "overlap":
+        entries[1]["data_offsets"] = entries[0]["data_offsets"]
+    elif corruption == "dtype":
+        entries[0]["dtype"] = "UNKNOWN"
+    else:
+        payload = payload[:-1]
+    raw = json.dumps(header).encode()
+    raw += b" " * (-len(raw) % 8)
+    source.write_bytes(struct.pack("<Q", len(raw)) + raw + payload)
+    with pytest.raises(SafetensorError):
+        export_checkpoint(checkpoint, model, tmp_path / "export", allow_base_fallback=("vision",))
+    assert not list(tmp_path.glob("export*"))
+
+
+@_cpu_only
+def test_cpu_export_frozen_stream_detects_early_eof(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    checkpoint, model, expected = _fixture(tmp_path)
+    expected["model.visual.weight"] = torch.arange(8.0)
+    save_file(expected, model / "model.safetensors")
+    original_copy = exporter.ShardWriter._copy_ranges
+
+    def truncate_then_copy(
+        self: exporter.ShardWriter,
+        ranges: list[tuple[str, Path, int, int]],
+        schema: dict[str, dict[str, Any]],
+        buffer: bytearray,
+    ) -> None:
+        _, path, offset, size = ranges[0]
+        with path.open("r+b") as handle:
+            handle.truncate(offset + size - 1)
+        return original_copy(self, ranges, schema, buffer)
+
+    monkeypatch.setattr(exporter.ShardWriter, "_copy_ranges", truncate_then_copy)
+    output = tmp_path / "export"
+    with pytest.raises(ValueError, match="Truncated frozen tensor"):
+        export_checkpoint(checkpoint, model, output, allow_base_fallback=("vision",))
+    assert not output.exists()
+    assert not list(tmp_path.glob("export.incomplete-*/model.safetensors.index.json"))
+
+
+@_cpu_only
 def test_cpu_dcp_rejects_holes_and_overlaps() -> None:
     properties = TensorProperties(dtype=torch.float32)
     hole = TensorStorageMetadata(
@@ -407,6 +737,7 @@ def test_cpu_dcp_rejects_holes_and_overlaps() -> None:
         check_chunks("weight", overlap)
 
 
+@_cpu_only
 def test_cpu_checkpoint_resolves_selected_iteration(tmp_path: Path) -> None:
     checkpoint, _, _ = _fixture(tmp_path)
     assert resolve_checkpoint(checkpoint.parent) == checkpoint
@@ -414,3 +745,38 @@ def test_cpu_checkpoint_resolves_selected_iteration(tmp_path: Path) -> None:
     assert resolve_checkpoint(checkpoint) == checkpoint
     with pytest.raises(FileNotFoundError):
         resolve_checkpoint(checkpoint.parent)
+
+
+def test_cpu_export_isolates_initialized_parent(tmp_path: Path) -> None:
+    code = """
+import sys
+import pytest
+import torch
+
+if torch.cuda.is_available():
+    torch.cuda.init()
+cuda_initialized = torch.cuda.is_initialized()
+torch.distributed.init_process_group("gloo", init_method=sys.argv[2], rank=0, world_size=1)
+group = torch.distributed.group.WORLD
+try:
+    result = pytest.main([sys.argv[1] + "::test_cpu_export_round_trip_without_model_or_cuda", "-q", "--tb=short", "--show-capture=no"])
+    assert torch.distributed.is_initialized(), "CPU tests changed the parent process group"
+    assert torch.distributed.group.WORLD is group, "CPU tests replaced the parent process group"
+    torch.distributed.all_reduce(torch.ones(1), group=group)
+    assert torch.cuda.is_initialized() == cuda_initialized, "CPU tests changed the parent CUDA state"
+finally:
+    torch.distributed.destroy_process_group()
+sys.exit(result)
+"""
+    env = dict(os.environ)
+    env.pop("_RELAX_CPU_EXPORT_TEST_CHILD", None)
+    env.pop("PYTEST_ADDOPTS", None)
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(Path(__file__).resolve()), (tmp_path / "store").as_uri()],
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
