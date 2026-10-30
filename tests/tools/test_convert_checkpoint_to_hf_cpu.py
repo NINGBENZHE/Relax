@@ -5,7 +5,7 @@ import os
 import subprocess
 import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from functools import wraps
 from pathlib import Path
@@ -66,6 +66,16 @@ def _cpu_only(test: Callable[..., None]) -> Callable[..., None]:
         assert result.returncode == 0, result.stdout + result.stderr
 
     return run
+
+
+@pytest.fixture(params=[True, False], ids=["crc", "no-crc"])
+def archive_crc32(request: pytest.FixtureRequest) -> Iterator[None]:
+    previous = torch.serialization.get_crc32_options()
+    torch.serialization.set_crc32_options(request.param)
+    try:
+        yield
+    finally:
+        torch.serialization.set_crc32_options(previous)
 
 
 def _fixture(tmp_path: Path) -> tuple[Path, Path, dict[str, torch.Tensor]]:
@@ -487,7 +497,9 @@ def test_cpu_dcp_partial_read_crosses_source_chunks(
 
 
 @_cpu_only
-def test_cpu_export_round_trip_with_range_reads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cpu_export_round_trip_with_range_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, archive_crc32: None
+) -> None:
     checkpoint, model, expected = _fixture(tmp_path)
     monkeypatch.setattr(range_reader, "RANGE_READ_THRESHOLD", 1)
     result = export_checkpoint(checkpoint, model, tmp_path / "export", shard_bytes=512)
@@ -499,9 +511,12 @@ def test_cpu_export_round_trip_with_range_reads(tmp_path: Path, monkeypatch: pyt
 
 
 @pytest.mark.parametrize("truncate", [False, True])
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
 @_cpu_only
-def test_cpu_range_read_preserves_storage_and_archive_offsets(tmp_path: Path, truncate: bool) -> None:
-    tensor = torch.arange(64, dtype=torch.bfloat16).reshape(8, 8)[2:6]
+def test_cpu_range_read_preserves_storage_and_archive_offsets(
+    tmp_path: Path, truncate: bool, dtype: torch.dtype, archive_crc32: None
+) -> None:
+    tensor = torch.arange(64, dtype=dtype).reshape(8, 8)[2:6]
     path = tmp_path / "data.distcp"
     with path.open("wb") as stream:
         stream.write(b"archive-prefix" * 13)
@@ -568,6 +583,48 @@ def test_cpu_range_read_rejects_invalid_archive_descriptors(tmp_path: Path, corr
             stream.truncate(length - 1)
     with pytest.raises(ValueError, match="descriptor|Truncated"):
         range_reader.tensor_record(path, SimpleNamespace(offset=0, length=length), shape, tensor.dtype)
+
+
+@pytest.mark.parametrize("corruption", ["short-storage", "long-storage", "offset"])
+@_cpu_only
+def test_cpu_range_read_rejects_invalid_serialized_storage(tmp_path: Path, corruption: str) -> None:
+    import io
+    import pickle
+    import zipfile
+
+    tensor = torch.arange(64.0).reshape(8, 8)
+
+    class TensorDescriptor:
+        def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
+            return torch._utils._rebuild_tensor_v2, (
+                tensor._typed_storage(),
+                1 if corruption == "offset" else 0,
+                tuple(tensor.shape),
+                tensor.stride(),
+                False,
+                {},
+            )
+
+    class StoragePickler(pickle.Pickler):
+        def persistent_id(self, obj: Any) -> Any:
+            if isinstance(obj, torch.storage.TypedStorage):
+                numel = {"short-storage": 32, "long-storage": 128, "offset": 64}[corruption]
+                return "storage", torch.FloatStorage, "0", "cpu", numel
+            return None
+
+    descriptor = io.BytesIO()
+    StoragePickler(descriptor, protocol=2).dump(TensorDescriptor())
+    original = io.BytesIO()
+    torch.save(tensor, original)
+    path = tmp_path / "data.distcp"
+    with zipfile.ZipFile(original) as source, zipfile.ZipFile(path, "w") as target:
+        for entry in source.infolist():
+            data = descriptor.getvalue() if entry.filename.endswith("/data.pkl") else source.read(entry)
+            target.writestr(entry, data)
+    with pytest.raises(ValueError, match="storage"):
+        range_reader.tensor_record(
+            path, SimpleNamespace(offset=0, length=path.stat().st_size), tuple(tensor.shape), tensor.dtype
+        )
 
 
 @_cpu_only

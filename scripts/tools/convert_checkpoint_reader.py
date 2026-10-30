@@ -58,7 +58,7 @@ class TensorRecord:
 
 def tensor_record(path: Path, info: Any, shape: tuple[int, ...], dtype: Any) -> TensorRecord | None:
     import torch
-    from torch._subclasses.fake_tensor import FakeTensorMode
+    from torch._weights_only_unpickler import Unpickler
 
     if getattr(info, "transform_descriptors", None):
         return None
@@ -72,13 +72,32 @@ def tensor_record(path: Path, info: Any, shape: tuple[int, ...], dtype: Any) -> 
                 return None
             entry = storages[0]
             prefix = entry.filename.rsplit("/data/", 1)[0]
-            byteorder = (
-                archive.read(prefix + "/byteorder").decode()
-                if prefix + "/byteorder" in archive.namelist()
-                else "little"
-            )
+        view.seek(0)
+        with torch.serialization._open_zipfile_reader(view) as archive:
+            # Torch archives may intentionally omit CRCs, including on metadata.
+            byteorder = archive.get_record("byteorder").decode() if archive.has_record("byteorder") else "little"
             if byteorder != sys.byteorder:
                 return None
+            descriptor = archive.get_record("data.pkl")
+
+        class MetadataUnpickler(Unpickler):
+            def persistent_load(self, saved_id: Any) -> Any:
+                kind, storage_type, key, _, numel = saved_id
+                if kind != "storage" or entry.filename != f"{prefix}/data/{key}":
+                    raise ValueError("DCP tensor references an unexpected storage")
+                storage_dtype = torch.uint8 if storage_type is torch.UntypedStorage else storage_type.dtype
+                nbytes = numel * torch.empty((), dtype=storage_dtype, device="meta").element_size()
+                if nbytes != entry.file_size:
+                    raise ValueError("DCP storage size disagrees with its descriptor")
+                # Use the serialized count: FakeTensor storage capacity varies
+                # across Torch versions. Meta storage never loads the payload.
+                return torch.storage.TypedStorage(
+                    wrap_storage=torch.UntypedStorage(nbytes, device="meta"), dtype=storage_dtype, _internal=True
+                )
+
+        tensor = MetadataUnpickler(io.BytesIO(descriptor), encoding="utf-8").load()
+        if not isinstance(tensor, torch.Tensor) or tuple(tensor.shape) != shape or tensor.dtype != dtype:
+            raise ValueError("DCP tensor descriptor disagrees with checkpoint metadata")
         view.seek(entry.header_offset)
         header = view.read(30)
         if len(header) != 30 or header[:4] != b"PK\x03\x04":
@@ -87,14 +106,6 @@ def tensor_record(path: Path, info: Any, shape: tuple[int, ...], dtype: Any) -> 
         payload = entry.header_offset + 30 + name_bytes + extra_bytes
         if payload + entry.file_size > info.length:
             raise ValueError("Tensor storage extends past its DCP archive")
-        view.seek(0)
-        # Fake tensors expose shape/stride/storage size without loading payloads.
-        with FakeTensorMode():
-            tensor = torch.load(view, map_location="cpu", weights_only=True)
-        if not isinstance(tensor, torch.Tensor) or tuple(tensor.shape) != shape or tensor.dtype != dtype:
-            raise ValueError("DCP tensor descriptor disagrees with checkpoint metadata")
-        if tensor.untyped_storage().nbytes() != entry.file_size:
-            raise ValueError("DCP storage size disagrees with its descriptor")
         if not tensor.is_contiguous():
             return None
         end = (tensor.storage_offset() + tensor.numel()) * tensor.element_size()
