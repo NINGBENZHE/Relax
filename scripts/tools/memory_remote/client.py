@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+# Copyright (c) 2026 Relax Authors. All Rights Reserved.
+"""Install and use the remote project memory client without training
+dependencies."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shlex
+import subprocess
+import sys
+import tempfile
+import uuid
+from pathlib import Path
+from typing import Any
+
+from bridge import Client, serve
+
+
+def write_private(path: Path, content: bytes, mode: int = 0o600) -> None:
+    """Atomic replacement; no partially written credentials on rotation."""
+    fd, temporary = tempfile.mkstemp(dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(content)
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def output(value: Any) -> None:
+    sys.stdout.write(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+
+
+def default_prefix() -> Path:
+    return Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share"))) / "relax-memory-remote"
+
+
+def install(args: argparse.Namespace) -> None:
+    prefix = args.prefix.expanduser().resolve()
+    # This script lives under scripts/tools/memory_remote in a checkout.
+    repository = next((p for p in Path(__file__).resolve().parents if (p / ".git").exists()), None)
+    if repository and (prefix == repository or repository in prefix.parents):
+        raise ValueError("Install outside the repository; credentials must not enter Git")
+    if prefix.exists() and any(prefix.iterdir()) and not args.replace:
+        raise ValueError("Installation already exists; use --replace to update this installation explicitly")
+    credential = json.loads(args.credential_file.read_text())
+    token = args.app_token_file.read_text().strip()
+    if not isinstance(credential, dict) or not isinstance(credential.get("token"), str):
+        raise ValueError("Expected a downloaded Agent credential JSON")
+    # Validate before touching an existing installation. Does not send a network request.
+    Client(args.endpoint, credential["token"], token, "installation-validation")
+    prefix.mkdir(parents=True, exist_ok=True, mode=0o700)
+    prefix.chmod(0o700)
+    for name in ("bridge.py", "client.py"):
+        write_private(prefix / name, Path(__file__).with_name(name).read_bytes())
+    write_private(prefix / "agent.json", json.dumps(credential).encode())
+    write_private(prefix / "cowork-app-token", token.encode())
+    write_private(prefix / "config.json", json.dumps({"endpoint": args.endpoint.rstrip("/")}).encode())
+    launcher = prefix / "relax-memory"
+    command = shlex.join([sys.executable, str(prefix / "client.py"), "--prefix", str(prefix)])
+    write_private(launcher, ("#!/bin/sh\nexec " + command + ' "$@"\n').encode(), 0o700)
+    output(
+        {
+            "installed": str(prefix),
+            "command": str(launcher),
+            "expires_at": credential.get("expires_at"),
+            "next": "Run check, then register-codex or mcp-config. Installation does not imply connectivity.",
+        }
+    )
+
+
+def client(prefix: Path, task_id: str | None) -> Client:
+    config = json.loads((prefix / "config.json").read_text())
+    credential = json.loads((prefix / "agent.json").read_text())
+    token = (prefix / "cowork-app-token").read_text().strip()
+    return Client(config["endpoint"], credential["token"], token, task_id or "remote-" + str(uuid.uuid4()))
+
+
+def mcp_config(prefix: Path, name: str) -> dict[str, Any]:
+    return {"mcpServers": {name: {"command": str(prefix / "relax-memory"), "args": ["mcp"]}}}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--prefix", type=Path, default=default_prefix(), help="Installation directory outside Git")
+    sub = parser.add_subparsers(dest="command", required=True)
+    setup = sub.add_parser("install", help="Copy standalone client and supplied credentials outside the repository")
+    setup.add_argument("--endpoint", required=True, help="HTTPS application base URL, without /api/agent")
+    setup.add_argument("--credential-file", type=Path, required=True)
+    setup.add_argument("--app-token-file", type=Path, required=True)
+    setup.add_argument(
+        "--replace", action="store_true", help="Explicitly update client/config/credentials in this prefix"
+    )
+    for name in ("mcp-config", "register-codex"):
+        config = sub.add_parser(name)
+        config.add_argument("--name", default="relax-memory")
+        if name == "register-codex":
+            config.add_argument("--replace", action="store_true", help="Replace an existing MCP entry with this name")
+    for name in ("check", "mcp", "search", "get", "propose", "feedback"):
+        command = sub.add_parser(name)
+        command.add_argument(
+            "--task-id", help="Reuse only to resume an old fixed snapshot; default creates a fresh task"
+        )
+        if name == "search":
+            command.add_argument("query")
+            command.add_argument("--limit", type=int, default=5)
+        if name == "get":
+            command.add_argument("memory_id")
+        if name in ("search", "get"):
+            command.add_argument("--max-bytes", type=int, default=8192)
+        if name == "propose":
+            command.add_argument("--body-file", type=Path, required=True)
+            command.add_argument("--idempotency-key", required=True, help="Stable per submission; reuse on retry")
+        if name == "feedback":
+            command.add_argument("receipt_id")
+            command.add_argument("assessment", choices=("helpful", "outdated", "incorrect"))
+    args = parser.parse_args()
+    prefix = args.prefix.expanduser().resolve()
+    try:
+        if args.command == "install":
+            install(args)
+        elif args.command == "mcp-config":
+            output(mcp_config(prefix, args.name))
+        elif args.command == "register-codex":
+            exists = subprocess.run(["codex", "mcp", "get", args.name], capture_output=True).returncode == 0
+            if exists and not args.replace:
+                raise ValueError("MCP name already exists; choose --name or explicitly pass --replace")
+            subprocess.run(["codex", "mcp", "add", args.name, "--", str(prefix / "relax-memory"), "mcp"], check=True)
+        else:
+            remote = client(prefix, args.task_id)
+            if args.command == "mcp":
+                serve(remote)
+            elif args.command == "check":
+                output({"ok": True, **remote.start()})
+            elif args.command == "search":
+                output(
+                    remote.call(
+                        "memory_search", {"query": args.query, "limit": args.limit, "max_bytes": args.max_bytes}
+                    )
+                )
+            elif args.command == "get":
+                output(remote.call("memory_get", {"memory_id": args.memory_id, "max_bytes": args.max_bytes}))
+            elif args.command == "propose":
+                output(
+                    remote.call(
+                        "memory_propose",
+                        {"body": json.loads(args.body_file.read_text()), "idempotency_key": args.idempotency_key},
+                    )
+                )
+            else:
+                output(remote.call("memory_feedback", {"receipt_id": args.receipt_id, "assessment": args.assessment}))
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.CalledProcessError) as exc:
+        # Never echo malformed credential contents or remote response bodies.
+        message = (
+            str(exc)
+            if isinstance(exc, RuntimeError)
+            else "Configuration or command failed; check paths, JSON, HTTPS endpoint and existing installation/MCP name"
+        )
+        sys.stderr.write(message + "\n")
+        raise SystemExit(1) from None
+
+
+if __name__ == "__main__":
+    main()
