@@ -254,6 +254,17 @@ def test_connect_device_flow_saves_only_personal_token(tmp_path, monkeypatch, ca
     monkeypatch.syspath_prepend(str(SOURCE.parent))
     namespace = runpy.run_path(str(SOURCE))
     prefix = tmp_path / "device"
+    registration = tmp_path / "registered.json"
+    executable = tmp_path / "codex"
+    executable.write_text(
+        "#!" + sys.executable + "\nimport sys,json\nfrom pathlib import Path\n"
+        "if sys.argv[2] == 'get': sys.exit(1)\n"
+        + "Path("
+        + repr(str(registration))
+        + ").write_text(json.dumps(sys.argv[1:]))\n"
+    )
+    executable.chmod(0o700)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ.get("PATH", ""))
     responses = iter(
         [
             {"device_code": "secret-device-" + "x" * 32, "user_code": "ABCDEF123456"},
@@ -287,10 +298,18 @@ def test_connect_device_flow_saves_only_personal_token(tmp_path, monkeypatch, ca
     namespace["main"]()
     assert json.loads((prefix / "agent.json").read_text())["token"] == "rm_personal-device-secret"
     assert (prefix / "cowork-app-token").read_text() == ""
+    assert json.loads(registration.read_text()) == [
+        "mcp",
+        "add",
+        "relax-memory",
+        "--",
+        str(prefix / "relax-memory"),
+        "mcp",
+    ]
     assert requests[-1][2]["Authorization"] == "Bearer rm_personal-device-secret"
     assert "App-Api-Token" not in requests[-1][2]
     captured = capsys.readouterr()
-    assert "ABCDEF123456" in captured.out
+    assert "https://login.example.invalid/device?code=ABCDEF123456" in captured.out
     assert "secret-device" not in captured.out + captured.err
     assert "rm_personal" not in captured.out + captured.err
 
@@ -318,6 +337,8 @@ def test_connect_denied_does_not_install(tmp_path, monkeypatch):
             "https://example.invalid",
             "--login-url",
             "https://login.example.invalid",
+            "--client",
+            "config",
         ],
     )
     with pytest.raises(SystemExit):
@@ -335,7 +356,17 @@ def test_anonymous_connect_mcp_exposes_read_tools_only(tmp_path, monkeypatch):
     monkeypatch.setattr(
         sys,
         "argv",
-        [str(SOURCE), "--prefix", str(prefix), "connect", "--read-only", "--endpoint", "https://example.invalid"],
+        [
+            str(SOURCE),
+            "--prefix",
+            str(prefix),
+            "connect",
+            "--read-only",
+            "--endpoint",
+            "https://example.invalid",
+            "--client",
+            "config",
+        ],
     )
     namespace["main"]()
     messages = [
