@@ -4,7 +4,48 @@
 有 Python 3.10+、能访问目标 HTTPS 网络并持有有效凭证即可使用；不需要安装
 PyTorch、Ray 或 Relax 的训练依赖。Windows 可使用 WSL。
 
-## 一次安装
+## 一条命令完成凭证配置和 MCP 接入
+
+从本分支拉取最新代码后，在交互式终端运行：
+
+```bash
+MEMORY_PYTHON=python3 bash scripts/tools/memory.sh remote setup --client codex
+```
+
+向导依次询问服务 HTTPS 地址、项目凭证、平台 Token。两项凭证使用隐藏输入，
+可以输入已有文件的绝对路径（也支持 `~/`），或直接粘贴对应 Token 原文。
+项目凭证选择 MiniApp 下载的 JSON 文件路径最方便，无需打开或手工拆分 JSON。
+直接粘贴项目 Token 时，保存的 JSON 不含到期元数据，但服务端仍强制执行到期与撤销。
+
+向导会先验证真实机器鉴权和任务快照，再创建安装目录并保存两个凭证文件，最后注册
+Codex 的 `relax-memory` MCP。新开 Codex 会话即可使用。不含 Codex 的机器去掉
+`--client codex`，向导会输出供其他 stdio MCP 客户端导入的配置。
+
+**凭证从哪里来：**
+
+- 项目凭证：管理员在 MiniApp 的“MCP 与成员”中先添加/启用成员，再为成员或设备
+  签发凭证，下载 `agent.json`，通过公司允许的安全渠道交付给使用者。
+- 平台 Token：应用管理员完成平台的服务端 Token 申请，获批后从平台通知中领取。
+  已经开通的应用无需每台机器重新申请；由获授权的管理员通过密钥管理系统或安全渠道
+  配置到调用机器。普通成员不能仅凭网络访问权限自行领取它。
+- 两项都不从公开仓库下载，不放到命令行、聊天、截图或共享配置中。隐藏输入也需要
+  使用者已经合法取得凭证；向导不是匿名领钥或自动审批服务。
+
+`setup` 默认不会覆盖已有安装或同名 MCP。更换凭证使用 `--replace`；确需替换
+已有 Codex MCP 条目时另外加 `--replace-mcp`。网络或鉴权验证失败时不覆盖原凭证；
+若后续 Codex 注册失败，已安装目录保留，可修复客户端后运行 `register-codex`。
+
+自动化环境必须使用文件参数，不允许从管道回退到可能回显密钥的输入方式：
+
+```bash
+MEMORY_PYTHON=python3 bash scripts/tools/memory.sh remote setup \
+  --endpoint "$RELAX_MEMORY_ENDPOINT" \
+  --credential-file /secure/agent.json \
+  --app-token-file /secure/cowork-app-token \
+  --client codex
+```
+
+## 使用已有凭证文件安装（不自动联网验证）
 
 从含本功能的 Relax checkout 根目录执行：
 

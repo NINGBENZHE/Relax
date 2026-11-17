@@ -6,13 +6,16 @@ dependencies."""
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
 import uuid
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +43,7 @@ def default_prefix() -> Path:
     return Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share"))) / "relax-memory-remote"
 
 
-def install(args: argparse.Namespace) -> None:
+def validate_destination(args: argparse.Namespace) -> Path:
     prefix = args.prefix.expanduser().resolve()
     # This script lives under scripts/tools/memory_remote in a checkout.
     repository = next((p for p in Path(__file__).resolve().parents if (p / ".git").exists()), None)
@@ -48,12 +51,23 @@ def install(args: argparse.Namespace) -> None:
         raise ValueError("Install outside the repository; credentials must not enter Git")
     if prefix.exists() and any(prefix.iterdir()) and not args.replace:
         raise ValueError("Installation already exists; use --replace to update this installation explicitly")
-    credential = json.loads(args.credential_file.read_text())
-    token = args.app_token_file.read_text().strip()
+    return prefix
+
+
+def install(
+    args: argparse.Namespace, credential: dict[str, Any] | None = None, token: str | None = None, verify: bool = False
+) -> None:
+    prefix = validate_destination(args)
+    if credential is None:
+        credential = json.loads(args.credential_file.expanduser().read_text())
+    if token is None:
+        token = args.app_token_file.expanduser().read_text().strip()
     if not isinstance(credential, dict) or not isinstance(credential.get("token"), str):
         raise ValueError("Expected a downloaded Agent credential JSON")
-    # Validate before touching an existing installation. Does not send a network request.
-    Client(args.endpoint, credential["token"], token, "installation-validation")
+    # Authenticate before persisting credentials when using the onboarding wizard.
+    remote = Client(args.endpoint, credential["token"], token, "setup-" + str(uuid.uuid4()))
+    if verify:
+        remote.start()
     prefix.mkdir(parents=True, exist_ok=True, mode=0o700)
     prefix.chmod(0o700)
     for name in ("bridge.py", "client.py"):
@@ -69,9 +83,63 @@ def install(args: argparse.Namespace) -> None:
             "installed": str(prefix),
             "command": str(launcher),
             "expires_at": credential.get("expires_at"),
-            "next": "Run check, then register-codex or mcp-config. Installation does not imply connectivity.",
+            "connection_verified": verify,
+            "next": "Register an MCP client or use search/propose. Run check if connectivity was not verified.",
         }
     )
+
+
+def read_hidden(prompt: str) -> str:
+    if not sys.stdin.isatty():
+        raise RuntimeError("Interactive setup requires a terminal; automation must supply both credential-file flags")
+    # getpass normally falls back to echoed stdin; forbid that fallback for credentials.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", getpass.GetPassWarning)
+        try:
+            return getpass.getpass(prompt).strip()
+        except getpass.GetPassWarning:
+            raise RuntimeError("Cannot disable terminal echo; use credential files instead") from None
+
+
+def read_input_file_or_secret(value: str) -> str:
+    if value.startswith(("/", "~/", "./", "../")):
+        return Path(value).expanduser().read_text().strip()
+    return value
+
+
+def register_codex(prefix: Path, name: str, replace: bool, preflight: bool = False) -> None:
+    if not shutil.which("codex"):
+        raise RuntimeError("Codex CLI not found; use --client config and import the generated MCP entry")
+    exists = subprocess.run(["codex", "mcp", "get", name], capture_output=True).returncode == 0
+    if exists and not replace:
+        raise RuntimeError("MCP name already exists; choose --name or explicitly allow replacing the MCP entry")
+    if not preflight:
+        subprocess.run(["codex", "mcp", "add", name, "--", str(prefix / "relax-memory"), "mcp"], check=True)
+
+
+def setup(args: argparse.Namespace) -> None:
+    prefix = validate_destination(args)
+    if not args.endpoint:
+        if not sys.stdin.isatty():
+            raise RuntimeError("Non-interactive setup requires --endpoint")
+        args.endpoint = input("Memory center HTTPS base URL (without /api/agent): ").strip()
+    # Check the destination and MCP conflict before asking for any secrets.
+    if args.client == "codex":
+        register_codex(prefix, args.name, args.replace_mcp, preflight=True)
+    if args.credential_file:
+        credential = json.loads(args.credential_file.expanduser().read_text())
+    else:
+        value = read_input_file_or_secret(read_hidden("Agent JSON file path or project token (hidden): "))
+        credential = json.loads(value) if value.startswith("{") else {"token": value}
+    if args.app_token_file:
+        token = args.app_token_file.expanduser().read_text().strip()
+    else:
+        token = read_input_file_or_secret(read_hidden("Platform Token file path or value (hidden): "))
+    install(args, credential, token, verify=True)
+    if args.client == "codex":
+        register_codex(prefix, args.name, args.replace_mcp)
+    else:
+        output(mcp_config(prefix, args.name))
 
 
 def client(prefix: Path, task_id: str | None) -> Client:
@@ -89,12 +157,24 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prefix", type=Path, default=default_prefix(), help="Installation directory outside Git")
     sub = parser.add_subparsers(dest="command", required=True)
-    setup = sub.add_parser("install", help="Copy standalone client and supplied credentials outside the repository")
-    setup.add_argument("--endpoint", required=True, help="HTTPS application base URL, without /api/agent")
-    setup.add_argument("--credential-file", type=Path, required=True)
-    setup.add_argument("--app-token-file", type=Path, required=True)
-    setup.add_argument(
+    installer = sub.add_parser(
+        "install", help="Copy standalone client and supplied credentials outside the repository"
+    )
+    installer.add_argument("--endpoint", required=True, help="HTTPS application base URL, without /api/agent")
+    installer.add_argument("--credential-file", type=Path, required=True)
+    installer.add_argument("--app-token-file", type=Path, required=True)
+    installer.add_argument(
         "--replace", action="store_true", help="Explicitly update client/config/credentials in this prefix"
+    )
+    wizard = sub.add_parser("setup", help="Configure credentials, verify the service and connect an MCP client")
+    wizard.add_argument("--endpoint", default=os.environ.get("RELAX_MEMORY_ENDPOINT"))
+    wizard.add_argument("--credential-file", type=Path)
+    wizard.add_argument("--app-token-file", type=Path)
+    wizard.add_argument("--client", choices=("codex", "config"), default="config")
+    wizard.add_argument("--name", default="relax-memory")
+    wizard.add_argument("--replace", action="store_true", help="Update this existing installation")
+    wizard.add_argument(
+        "--replace-mcp", action="store_true", help="Replace an existing Codex MCP entry with this name"
     )
     for name in ("mcp-config", "register-codex"):
         config = sub.add_parser(name)
@@ -124,13 +204,12 @@ def main() -> None:
     try:
         if args.command == "install":
             install(args)
+        elif args.command == "setup":
+            setup(args)
         elif args.command == "mcp-config":
             output(mcp_config(prefix, args.name))
         elif args.command == "register-codex":
-            exists = subprocess.run(["codex", "mcp", "get", args.name], capture_output=True).returncode == 0
-            if exists and not args.replace:
-                raise ValueError("MCP name already exists; choose --name or explicitly pass --replace")
-            subprocess.run(["codex", "mcp", "add", args.name, "--", str(prefix / "relax-memory"), "mcp"], check=True)
+            register_codex(prefix, args.name, args.replace)
         else:
             remote = client(prefix, args.task_id)
             if args.command == "mcp":
@@ -154,6 +233,9 @@ def main() -> None:
                 )
             else:
                 output(remote.call("memory_feedback", {"receipt_id": args.receipt_id, "assessment": args.assessment}))
+    except (EOFError, KeyboardInterrupt):
+        sys.stderr.write("Setup cancelled; no credential values printed.\n")
+        raise SystemExit(1) from None
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.CalledProcessError) as exc:
         # Never echo malformed credential contents or remote response bodies.
         message = (

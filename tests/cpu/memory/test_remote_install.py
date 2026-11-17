@@ -135,3 +135,114 @@ def test_cli_propose_keeps_idempotency_key_and_returns_pending(tmp_path, monkeyp
     namespace["main"]()
     assert requests[-1] == ("memory_propose", {"body": body, "idempotency_key": "stable-retry-key"})
     assert json.loads(capsys.readouterr().out)["committed"] is False
+
+
+def test_setup_hidden_inputs_verify_before_install(tmp_path, monkeypatch, capsys):
+    import runpy
+
+    monkeypatch.syspath_prepend(str(SOURCE.parent))
+    namespace = runpy.run_path(str(SOURCE))
+    prefix = tmp_path / "wizard"
+    answers = iter(["rm_onboarding-secret", "platform-onboarding-secret"])
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(namespace["getpass"], "getpass", lambda prompt: next(answers))
+    calls = []
+
+    def start(self):
+        assert not prefix.exists()
+        calls.append((self.agent_token, self.app_token))
+        return {"snapshot_id": "verified"}
+
+    monkeypatch.setattr(namespace["Client"], "start", start)
+    monkeypatch.setattr(
+        sys, "argv", [str(SOURCE), "--prefix", str(prefix), "setup", "--endpoint", "https://example.invalid/memory"]
+    )
+    namespace["main"]()
+    assert calls == [("rm_onboarding-secret", "platform-onboarding-secret")]
+    assert json.loads((prefix / "agent.json").read_text())["token"] == "rm_onboarding-secret"
+    assert (prefix / "cowork-app-token").read_text() == "platform-onboarding-secret"
+    captured = capsys.readouterr()
+    assert "onboarding-secret" not in captured.out + captured.err
+    assert '"connection_verified": true' in captured.out
+
+
+def test_setup_auth_failure_keeps_existing_credentials(tmp_path, monkeypatch, capsys):
+    import runpy
+
+    import pytest
+
+    prefix, result = install(tmp_path)
+    assert result.returncode == 0
+    before = (prefix / "agent.json").read_bytes()
+    replacement = tmp_path / "replacement.json"
+    replacement.write_text(json.dumps({"token": "rm_replacement-secret"}))
+    monkeypatch.syspath_prepend(str(SOURCE.parent))
+    namespace = runpy.run_path(str(SOURCE))
+
+    def fail(self):
+        raise RuntimeError("Memory HTTP 401")
+
+    monkeypatch.setattr(namespace["Client"], "start", fail)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(SOURCE),
+            "--prefix",
+            str(prefix),
+            "setup",
+            "--replace",
+            "--endpoint",
+            "https://example.invalid/memory",
+            "--credential-file",
+            str(replacement),
+            "--app-token-file",
+            str(tmp_path / "input-app-token"),
+        ],
+    )
+    with pytest.raises(SystemExit):
+        namespace["main"]()
+    assert (prefix / "agent.json").read_bytes() == before
+    assert "replacement-secret" not in capsys.readouterr().err
+
+
+def test_setup_without_terminal_refuses_missing_secrets(tmp_path):
+    prefix = tmp_path / "unattended"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SOURCE),
+            "--prefix",
+            str(prefix),
+            "setup",
+            "--endpoint",
+            "https://example.invalid/memory",
+        ],
+        input="do-not-read-secret\n",
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode != 0
+    assert "requires a terminal" in result.stderr
+    assert "do-not-read-secret" not in result.stdout + result.stderr
+    assert not prefix.exists()
+
+
+def test_hidden_prompt_never_falls_back_to_echo(monkeypatch):
+    import runpy
+    import warnings
+
+    import pytest
+
+    monkeypatch.syspath_prepend(str(SOURCE.parent))
+    namespace = runpy.run_path(str(SOURCE))
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    def unsafe_prompt(prompt):
+        warnings.warn("No echo control", namespace["getpass"].GetPassWarning)
+        raise AssertionError("Must stop before fallback input")
+
+    monkeypatch.setattr(namespace["getpass"], "getpass", unsafe_prompt)
+    with pytest.raises(RuntimeError, match="Cannot disable terminal echo"):
+        namespace["read_hidden"]("secret: ")
