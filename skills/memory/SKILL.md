@@ -14,8 +14,32 @@ configuration, review and import/export. The service has no Ray or GPU dependenc
 For the Cowork shared center, use `bash scripts/tools/memory.sh remote` and read
 [the remote installation guide](../../docs/zh/guide/project-memory-remote.md).
 This is a separate HTTPS backend with project membership and human review; it does
-not synchronize the local SQLite service. Install outside Git with explicit endpoint
-and per-member credential files. Never ingest approval logs or installation probes as
+not synchronize the local SQLite service. Install outside Git with an explicit endpoint.
+
+For direct Cowork installation, prefer `remote setup --client codex`: it accepts
+credential file paths or hidden Token paste and verifies connectivity before saving.
+Do not require a new relay or external sharing when the user can configure approved
+credentials. Before starting the wizard, explain and provide the applicable links:
+
+- The platform Token belongs to the **application**, not automatically to each employee.
+  On the user's trusted Cowork portal, open `/sso-application?hideNavigationBar=true`,
+  select “服务端 API Token” and the intended application; do not select “应用外发”.
+  An approved Token is delivered to the applicant through Hi. Existing approval is
+  not permission for every user to retrieve or redistribute the same Token.
+- The personal memory credential comes from the intended MiniApp's “MCP 与成员”:
+  the administrator enables the member and issues/downloads their Agent credential.
+- Present complete clickable URLs using the deployment's known portal and MiniApp
+  addresses; get them from the user or verified deployment context, never invent a
+  hostname. Link the platform's official Token guide when available. Application
+  approval pages show progress; do not promise they display the plaintext Token.
+- Ask the user to paste secrets into the wizard's hidden terminal prompts, not chat.
+  Details and file-based automation are in the remote installation guide.
+
+Device `connect` is a separate path requiring a working intranet relay or a platform-
+authorized direct gateway. Do not claim it works on the existing Cowork gateway
+without its platform Token merely because device authorization is implemented.
+
+Never ingest approval logs or installation probes as
 reusable knowledge. Machine credentials cannot approve proposals.
 
 ## Choose the deployment
