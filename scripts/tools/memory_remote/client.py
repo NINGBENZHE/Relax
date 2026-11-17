@@ -172,9 +172,8 @@ def connect(args: argparse.Namespace) -> None:
             raise RuntimeError("Invalid user code")
         output(
             {
-                "login_url": args.login_url,
-                "user_code": code,
-                "next": "Open MiniApp > MCP 与成员 > 连接新设备, claim this code, then ask the administrator to authorize it.",
+                "registration_url": args.login_url.rstrip("/") + "/device?code=" + code,
+                "next": "Open registration_url, sign in and confirm your device. MCP is configured automatically after administrator approval.",
             }
         )
         deadline = time.monotonic() + 900
@@ -247,7 +246,7 @@ def main() -> None:
     connector.add_argument("--login-url", default=os.environ.get("RELAX_MEMORY_LOGIN_URL"))
     connector.add_argument("--read-only", action="store_true", help="Anonymous MCP reads; no credentials or login")
     connector.add_argument("--label", default=socket.gethostname())
-    connector.add_argument("--client", choices=("codex", "config"), default="config")
+    connector.add_argument("--client", choices=("codex", "config"), default="codex")
     connector.add_argument("--name", default="relax-memory")
     connector.add_argument("--replace", action="store_true")
     connector.add_argument("--replace-mcp", action="store_true")
