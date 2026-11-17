@@ -4,6 +4,51 @@
 有 Python 3.10+、能访问目标 HTTPS 网络并持有有效凭证即可使用；不需要安装
 PyTorch、Ray 或 Relax 的训练依赖。Windows 可使用 WSL。
 
+## 推荐：直连，平台 Token 只配置一次
+
+Cowork 机器入口仍要求平台代理 Token；它与最长 90 天的个人设备凭证是两种凭证。
+使用你获准使用的应用 Token，不要将他人的 Token 分发给同事或写入 Git、聊天、日志和命令参数。
+平台 Token 持续有效期间无需每次启动重新申请；撤销或轮换后需更新本机配置。
+
+先拉取包含本脚本的分支，在仓库根目录执行。只需 Python 3.10+；自动注册 Codex 还需 Codex CLI。
+`RELAX_MEMORY_ENDPOINT` 设置为管理员提供的 Cowork 机器 HTTPS 根地址（不含 `/api/agent`）。
+
+### 只读：无需个人 JSON
+
+```bash
+bash scripts/tools/memory.sh remote connect \
+  --endpoint "$RELAX_MEMORY_ENDPOINT" --read-only
+```
+
+首次安装会隐藏输入平台代理 Token（也可输入 Token 文件绝对路径）。连通性验证成功后，
+安装器将 Token 保存到仓库外的个人目录并自动注册 Codex MCP；不创建个人 `agent.json`。
+MCP 仅提供 `memory_search`、`memory_get`，只能读取当前已批准且未失效的知识。
+后续直接使用 MCP，不必重复执行安装或粘贴 Token。
+
+### 上报：登录和管理员授权，自动领取个人凭证
+
+```bash
+bash scripts/tools/memory.sh remote connect \
+  --endpoint "$RELAX_MEMORY_ENDPOINT" --login-url "$RELAX_MEMORY_LOGIN_URL"
+```
+
+`RELAX_MEMORY_LOGIN_URL` 是浏览器可登录的 MiniApp 根地址，可与机器地址不同；未指定时使用机器根地址。
+首次隐藏输入平台 Token 后，终端显示注册链接。打开链接、公司登录、确认设备，管理员先确认
+贡献者成员资格，再批准设备。保持安装进程运行；安装器自动领取并私密保存个人凭证，然后注册 MCP。
+无需手填设备码、下载 JSON 或复制个人 Token。平台 Token 只发往配置的机器地址，不放入注册链接。
+设备申请 15 分钟过期；个人凭证最长 90 天，可撤销；上报仍进入待审批候选，不授予机器审批权限。
+
+已有只读安装升级为可上报时，使用相同 endpoint 加 `--replace --replace-mcp`；自动复用已保存平台 Token。
+仅在 endpoint 完全相同（忽略尾部斜线）时复用，地址变化会要求重新输入，避免把 Token 发往其他服务。
+显式提供 `--app-token-file /absolute/path/cowork-app-token` 可用于非交互安装或 Token 轮换；
+此参数优先于已保存 Token。更新安装需 `--replace`，替换已有同名 MCP 需 `--replace-mcp`。
+
+默认目录为 `~/.local/share/relax-memory-remote`（遵循 `XDG_DATA_HOME`），目录权限 700、凭证文件 600。
+可在 `connect` 前加 `--prefix /private/absolute/path` 自定义目录。
+没有 Codex CLI 时加 `--client config` 输出 MCP 配置，供其他客户端导入，保留其已有配置。
+若凭证领取后网络检查失败，个人凭证已保存；运行安装目录中的 `relax-memory check` 重试，
+再用 `relax-memory register-codex` 完成注册（同名替换加 `--replace`）。
+
 ## 内网免平台 Token 接入（新增）
 
 部署模型是：设备 → 内网 HTTPS 接入服务 → 原有记忆中心。**不申请应用外发，不关闭
@@ -14,7 +59,7 @@ Cowork 的 SSO**。平台 Token 仅保存在内网服务上，新设备只会获
 （原 MiniApp 的 SSO 地址）后，新机器运行：
 
 ```bash
-MEMORY_PYTHON=python3 bash scripts/tools/memory.sh remote connect \
+MEMORY_PYTHON=python3 bash scripts/tools/memory.sh remote connect --via-relay \
   --endpoint "$RELAX_MEMORY_ENDPOINT" --login-url "$RELAX_MEMORY_LOGIN_URL" --client codex
 ```
 
@@ -30,7 +75,7 @@ MEMORY_PYTHON=python3 bash scripts/tools/memory.sh remote connect \
 只需要内网匿名读取时，不必登录或领取凭证：
 
 ```bash
-MEMORY_PYTHON=python3 bash scripts/tools/memory.sh remote connect \
+MEMORY_PYTHON=python3 bash scripts/tools/memory.sh remote connect --via-relay \
   --endpoint "$RELAX_MEMORY_ENDPOINT" --read-only --client codex
 ```
 

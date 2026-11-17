@@ -16,8 +16,12 @@ For the Cowork shared center, use `bash scripts/tools/memory.sh remote` and read
 This is a separate HTTPS backend with project membership and human review; it does
 not synchronize the local SQLite service. Install outside Git with an explicit endpoint.
 
-For direct Cowork installation, prefer `remote setup --client codex`: it accepts
-credential file paths or hidden Token paste and verifies connectivity before saving.
+For direct Cowork installation, prefer `remote connect --read-only` for reads, or
+`remote connect --login-url <SSO MiniApp base>` for device-authorized uploads. Both
+prompt secretly for the approved platform Token once and register Codex by default.
+Read-only does not require or create personal Agent JSON. Device enrollment saves
+the personal credential automatically after administrator approval. The legacy
+`remote setup --client codex` remains available for existing personal credentials.
 Do not require a new relay or external sharing when the user can configure approved
 credentials. Before starting the wizard, explain and provide the applicable links:
 
@@ -35,9 +39,10 @@ credentials. Before starting the wizard, explain and provide the applicable link
 - Ask the user to paste secrets into the wizard's hidden terminal prompts, not chat.
   Details and file-based automation are in the remote installation guide.
 
-Device `connect` is a separate path requiring a working intranet relay or a platform-
-authorized direct gateway. Do not claim it works on the existing Cowork gateway
-without its platform Token merely because device authorization is implemented.
+Device `connect` sends the configured platform Token to the existing gateway.
+Use `--via-relay` only for an approved intranet relay that owns the platform Token;
+never claim the direct Cowork gateway works without it. Reconfiguration can reuse
+the saved Token only for the same endpoint. Do not redistribute another user’s Token.
 
 Never ingest approval logs or installation probes as
 reusable knowledge. Machine credentials cannot approve proposals.

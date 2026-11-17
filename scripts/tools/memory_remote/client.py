@@ -76,11 +76,20 @@ def install(
     prefix.chmod(0o700)
     for name in ("bridge.py", "client.py"):
         write_private(prefix / name, Path(__file__).with_name(name).read_bytes())
-    write_private(prefix / "agent.json", json.dumps(credential).encode())
+    if credential["token"]:
+        write_private(prefix / "agent.json", json.dumps(credential).encode())
+    else:
+        (prefix / "agent.json").unlink(missing_ok=True)
     write_private(prefix / "cowork-app-token", token.encode())
     write_private(
         prefix / "config.json",
-        json.dumps({"endpoint": args.endpoint.rstrip("/"), "public": getattr(args, "public", False)}).encode(),
+        json.dumps(
+            {
+                "endpoint": args.endpoint.rstrip("/"),
+                "public": getattr(args, "public", False),
+                "read_only": not credential["token"],
+            }
+        ).encode(),
     )
     launcher = prefix / "relax-memory"
     command = shlex.join([sys.executable, str(prefix / "client.py"), "--prefix", str(prefix)])
@@ -98,7 +107,7 @@ def install(
 
 def read_hidden(prompt: str) -> str:
     if not sys.stdin.isatty():
-        raise RuntimeError("Interactive setup requires a terminal; automation must supply both credential-file flags")
+        raise RuntimeError("Interactive setup requires a terminal; automation must supply credential file flags")
     # getpass normally falls back to echoed stdin; forbid that fallback for credentials.
     with warnings.catch_warnings():
         warnings.simplefilter("error", getpass.GetPassWarning)
@@ -150,20 +159,42 @@ def setup(args: argparse.Namespace) -> None:
 
 
 def connect(args: argparse.Namespace) -> None:
-    """Public read or SSO device enrollment; never provision a shared platform
-    token."""
+    """Configure the platform token once, then read or enroll a personal
+    device."""
     prefix = validate_destination(args)
     if args.client == "codex":
         register_codex(prefix, args.name, args.replace_mcp, preflight=True)
-    remote = Client(args.endpoint, "", "", "connect-" + str(uuid.uuid4()), public=True)
+    Client(args.endpoint, "", "", "validate-endpoint", public=True)
+    if args.via_relay and args.app_token_file:
+        raise ValueError("--via-relay cannot be combined with --app-token-file")
+    token = ""
+    if not args.via_relay:
+        if args.app_token_file:
+            token = args.app_token_file.expanduser().read_text().strip()
+        elif (prefix / "config.json").exists():
+            saved = json.loads((prefix / "config.json").read_text())
+            if saved.get("endpoint") == args.endpoint.rstrip("/") and (prefix / "cowork-app-token").exists():
+                token = (prefix / "cowork-app-token").read_text().strip()
+        if not token:
+            token = read_input_file_or_secret(read_hidden("Approved platform Token file path or value (hidden): "))
+        if not token:
+            raise ValueError("Direct connection requires a platform Token; use --via-relay only for an approved relay")
+    remote = Client(args.endpoint, "", token, "connect-" + str(uuid.uuid4()), public=True)
+    gateway_headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if token:
+        gateway_headers["App-Api-Token"] = token
     args.public = True
     credential = {"token": ""}
     if not args.read_only:
         if not args.login_url:
-            raise RuntimeError("Device enrollment requires --login-url for the SSO-protected MiniApp")
+            if args.via_relay:
+                raise RuntimeError("Device enrollment through a relay requires --login-url")
+            args.login_url = args.endpoint
         # Validate the configured login URL without trusting an arbitrary server redirect.
         Client(args.login_url, "", "", "validate-login", public=True)
-        enrollment = remote.post(args.endpoint.rstrip("/") + "/api/network/device/start", {"label": args.label})
+        enrollment = remote.post(
+            args.endpoint.rstrip("/") + "/api/network/device/start", {"label": args.label}, gateway_headers
+        )
         secret = enrollment["device_code"]
         if not isinstance(secret, str) or not 20 <= len(secret) <= 200:
             raise RuntimeError("Invalid device enrollment response")
@@ -179,7 +210,9 @@ def connect(args: argparse.Namespace) -> None:
         deadline = time.monotonic() + 900
         while time.monotonic() < deadline:
             time.sleep(5)
-            response = remote.post(args.endpoint.rstrip("/") + "/api/network/device/token", {"device_code": secret})
+            response = remote.post(
+                args.endpoint.rstrip("/") + "/api/network/device/token", {"device_code": secret}, gateway_headers
+            )
             status = response.get("status")
             if status == "authorized":
                 credential = response["credential"]
@@ -190,11 +223,11 @@ def connect(args: argparse.Namespace) -> None:
             raise RuntimeError("Device authorization timed out; start a new login")
         # Save the single-use exchange result before a further network check, so a
         # transient failure after issuance cannot discard the only token copy.
-        install(args, credential, "", verify=False)
+        install(args, credential, token, verify=False)
         client(prefix, None).start()
         output({"connection_verified": True, "credential_source": "device_authorization"})
     else:
-        install(args, credential, "", verify=True)
+        install(args, credential, token, verify=True)
     if args.client == "codex":
         register_codex(prefix, args.name, args.replace_mcp)
     else:
@@ -203,7 +236,7 @@ def connect(args: argparse.Namespace) -> None:
 
 def client(prefix: Path, task_id: str | None) -> Client:
     config = json.loads((prefix / "config.json").read_text())
-    credential = json.loads((prefix / "agent.json").read_text())
+    credential = {"token": ""} if config.get("read_only") else json.loads((prefix / "agent.json").read_text())
     token = (prefix / "cowork-app-token").read_text().strip()
     return Client(
         config["endpoint"],
@@ -241,10 +274,20 @@ def main() -> None:
     wizard.add_argument(
         "--replace-mcp", action="store_true", help="Replace an existing Codex MCP entry with this name"
     )
-    connector = sub.add_parser("connect", help="Connect through intranet relay; authorize uploads in MiniApp")
+    connector = sub.add_parser("connect", help="Configure a platform Token once; read or authorize uploads in MiniApp")
     connector.add_argument("--endpoint", required=True)
     connector.add_argument("--login-url", default=os.environ.get("RELAX_MEMORY_LOGIN_URL"))
-    connector.add_argument("--read-only", action="store_true", help="Anonymous MCP reads; no credentials or login")
+    connector.add_argument(
+        "--read-only",
+        action="store_true",
+        help="Read approved knowledge without a personal credential or device login",
+    )
+    connector.add_argument(
+        "--app-token-file", type=Path, help="Approved platform Token file; otherwise prompt secretly"
+    )
+    connector.add_argument(
+        "--via-relay", action="store_true", help="Use an approved intranet relay that owns the platform Token"
+    )
     connector.add_argument("--label", default=socket.gethostname())
     connector.add_argument("--client", choices=("codex", "config"), default="codex")
     connector.add_argument("--name", default="relax-memory")
