@@ -289,6 +289,7 @@ def test_connect_device_flow_saves_only_personal_token(tmp_path, monkeypatch, ca
             "--prefix",
             str(prefix),
             "connect",
+            "--via-relay",
             "--endpoint",
             "https://example.invalid",
             "--login-url",
@@ -333,6 +334,7 @@ def test_connect_denied_does_not_install(tmp_path, monkeypatch):
             "--prefix",
             str(prefix),
             "connect",
+            "--via-relay",
             "--endpoint",
             "https://example.invalid",
             "--login-url",
@@ -361,6 +363,7 @@ def test_anonymous_connect_mcp_exposes_read_tools_only(tmp_path, monkeypatch):
             "--prefix",
             str(prefix),
             "connect",
+            "--via-relay",
             "--read-only",
             "--endpoint",
             "https://example.invalid",
@@ -431,3 +434,69 @@ def test_intranet_relay_allowlist_and_header_isolation(monkeypatch):
         server.shutdown()
         server.server_close()
         worker.join(timeout=5)
+
+
+def test_direct_connect_token_once_read_only_then_device(tmp_path, monkeypatch, capsys):
+    import runpy
+
+    monkeypatch.syspath_prepend(str(SOURCE.parent))
+    namespace = runpy.run_path(str(SOURCE))
+    prefix = tmp_path / "direct"
+    token_file = tmp_path / "platform-token"
+    token_file.write_text("platform-private-fixture")
+    requests = []
+    responses = iter(
+        [
+            {"result": {"snapshot_id": "public-current"}},
+            {"device_code": "s" * 32, "user_code": "ABCDEF123456"},
+            {"status": "authorized", "credential": {"token": "rm_personal-fixture"}},
+            {"result": {"snapshot_id": "personal-snapshot"}},
+        ]
+    )
+
+    def post(self, url, body, headers=None):
+        requests.append((url, body, headers))
+        return next(responses)
+
+    monkeypatch.setattr(namespace["Client"], "post", post)
+    monkeypatch.setattr(namespace["time"], "sleep", lambda _: None)
+    base = [
+        str(SOURCE),
+        "--prefix",
+        str(prefix),
+        "connect",
+        "--endpoint",
+        "https://example.invalid/center",
+        "--client",
+        "config",
+    ]
+    monkeypatch.setattr(sys, "argv", base + ["--read-only", "--app-token-file", str(token_file)])
+    namespace["main"]()
+    assert not (prefix / "agent.json").exists()
+    assert (prefix / "cowork-app-token").stat().st_mode & 0o777 == 0o600
+    assert prefix.stat().st_mode & 0o777 == 0o700
+    assert namespace["client"](prefix, None).agent_token == ""
+    assert "Authorization" not in requests[0][2]
+    # Same endpoint reuses the saved token without a prompt or a personal JSON input.
+    monkeypatch.setattr(sys, "argv", base + ["--replace"])
+    namespace["main"]()
+    assert json.loads((prefix / "agent.json").read_text())["token"] == "rm_personal-fixture"
+    assert (prefix / "agent.json").stat().st_mode & 0o777 == 0o600
+    assert all(r[2]["App-Api-Token"] == "platform-private-fixture" for r in requests)
+    assert requests[1][0].endswith("/api/network/device/start")
+    assert requests[2][0].endswith("/api/network/device/token")
+    assert requests[-1][2]["Authorization"] == "Bearer rm_personal-fixture"
+    captured = capsys.readouterr()
+    assert "https://example.invalid/center/device?code=ABCDEF123456" in captured.out
+    assert "platform-private-fixture" not in captured.out + captured.err
+    assert "rm_personal-fixture" not in captured.out + captured.err
+    assert "s" * 32 not in captured.out + captured.err
+    # Never carry a saved platform token to a different endpoint.
+    monkeypatch.setattr(
+        sys, "argv", [x.replace("example.invalid", "other.invalid") for x in base] + ["--replace", "--read-only"]
+    )
+    import pytest
+
+    with pytest.raises(SystemExit):
+        namespace["main"]()
+    assert len(requests) == 4
