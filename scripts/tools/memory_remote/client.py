@@ -11,9 +11,11 @@ import json
 import os
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 import warnings
 from pathlib import Path
@@ -65,7 +67,9 @@ def install(
     if not isinstance(credential, dict) or not isinstance(credential.get("token"), str):
         raise ValueError("Expected a downloaded Agent credential JSON")
     # Authenticate before persisting credentials when using the onboarding wizard.
-    remote = Client(args.endpoint, credential["token"], token, "setup-" + str(uuid.uuid4()))
+    remote = Client(
+        args.endpoint, credential["token"], token, "setup-" + str(uuid.uuid4()), public=getattr(args, "public", False)
+    )
     if verify:
         remote.start()
     prefix.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -74,7 +78,10 @@ def install(
         write_private(prefix / name, Path(__file__).with_name(name).read_bytes())
     write_private(prefix / "agent.json", json.dumps(credential).encode())
     write_private(prefix / "cowork-app-token", token.encode())
-    write_private(prefix / "config.json", json.dumps({"endpoint": args.endpoint.rstrip("/")}).encode())
+    write_private(
+        prefix / "config.json",
+        json.dumps({"endpoint": args.endpoint.rstrip("/"), "public": getattr(args, "public", False)}).encode(),
+    )
     launcher = prefix / "relax-memory"
     command = shlex.join([sys.executable, str(prefix / "client.py"), "--prefix", str(prefix)])
     write_private(launcher, ("#!/bin/sh\nexec " + command + ' "$@"\n').encode(), 0o700)
@@ -142,11 +149,70 @@ def setup(args: argparse.Namespace) -> None:
         output(mcp_config(prefix, args.name))
 
 
+def connect(args: argparse.Namespace) -> None:
+    """Public read or SSO device enrollment; never provision a shared platform
+    token."""
+    prefix = validate_destination(args)
+    if args.client == "codex":
+        register_codex(prefix, args.name, args.replace_mcp, preflight=True)
+    remote = Client(args.endpoint, "", "", "connect-" + str(uuid.uuid4()), public=True)
+    args.public = True
+    credential = {"token": ""}
+    if not args.read_only:
+        if not args.login_url:
+            raise RuntimeError("Device enrollment requires --login-url for the SSO-protected MiniApp")
+        # Validate the configured login URL without trusting an arbitrary server redirect.
+        Client(args.login_url, "", "", "validate-login", public=True)
+        enrollment = remote.post(args.endpoint.rstrip("/") + "/api/network/device/start", {"label": args.label})
+        secret = enrollment["device_code"]
+        if not isinstance(secret, str) or not 20 <= len(secret) <= 200:
+            raise RuntimeError("Invalid device enrollment response")
+        code = enrollment["user_code"]
+        if not isinstance(code, str) or len(code) != 12 or any(c not in "0123456789ABCDEF" for c in code):
+            raise RuntimeError("Invalid user code")
+        output(
+            {
+                "login_url": args.login_url,
+                "user_code": code,
+                "next": "Open MiniApp > MCP 与成员 > 连接新设备, claim this code, then ask the administrator to authorize it.",
+            }
+        )
+        deadline = time.monotonic() + 900
+        while time.monotonic() < deadline:
+            time.sleep(5)
+            response = remote.post(args.endpoint.rstrip("/") + "/api/network/device/token", {"device_code": secret})
+            status = response.get("status")
+            if status == "authorized":
+                credential = response["credential"]
+                break
+            if status != "pending":
+                raise RuntimeError("Device authorization denied, expired or already consumed; start a new login")
+        else:
+            raise RuntimeError("Device authorization timed out; start a new login")
+        # Save the single-use exchange result before a further network check, so a
+        # transient failure after issuance cannot discard the only token copy.
+        install(args, credential, "", verify=False)
+        client(prefix, None).start()
+        output({"connection_verified": True, "credential_source": "device_authorization"})
+    else:
+        install(args, credential, "", verify=True)
+    if args.client == "codex":
+        register_codex(prefix, args.name, args.replace_mcp)
+    else:
+        output(mcp_config(prefix, args.name))
+
+
 def client(prefix: Path, task_id: str | None) -> Client:
     config = json.loads((prefix / "config.json").read_text())
     credential = json.loads((prefix / "agent.json").read_text())
     token = (prefix / "cowork-app-token").read_text().strip()
-    return Client(config["endpoint"], credential["token"], token, task_id or "remote-" + str(uuid.uuid4()))
+    return Client(
+        config["endpoint"],
+        credential["token"],
+        token,
+        task_id or "remote-" + str(uuid.uuid4()),
+        public=config.get("public", False),
+    )
 
 
 def mcp_config(prefix: Path, name: str) -> dict[str, Any]:
@@ -176,6 +242,15 @@ def main() -> None:
     wizard.add_argument(
         "--replace-mcp", action="store_true", help="Replace an existing Codex MCP entry with this name"
     )
+    connector = sub.add_parser("connect", help="Connect through intranet relay; authorize uploads in MiniApp")
+    connector.add_argument("--endpoint", required=True)
+    connector.add_argument("--login-url", default=os.environ.get("RELAX_MEMORY_LOGIN_URL"))
+    connector.add_argument("--read-only", action="store_true", help="Anonymous MCP reads; no credentials or login")
+    connector.add_argument("--label", default=socket.gethostname())
+    connector.add_argument("--client", choices=("codex", "config"), default="config")
+    connector.add_argument("--name", default="relax-memory")
+    connector.add_argument("--replace", action="store_true")
+    connector.add_argument("--replace-mcp", action="store_true")
     for name in ("mcp-config", "register-codex"):
         config = sub.add_parser(name)
         config.add_argument("--name", default="relax-memory")
@@ -204,6 +279,8 @@ def main() -> None:
     try:
         if args.command == "install":
             install(args)
+        elif args.command == "connect":
+            connect(args)
         elif args.command == "setup":
             setup(args)
         elif args.command == "mcp-config":

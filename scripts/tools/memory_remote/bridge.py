@@ -91,7 +91,7 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 class Client:
-    def __init__(self, endpoint: str, agent_token: str, app_token: str, task_id: str) -> None:
+    def __init__(self, endpoint: str, agent_token: str, app_token: str, task_id: str, public: bool = False) -> None:
         parsed = urlsplit(endpoint)
         if (
             parsed.scheme != "https"
@@ -102,28 +102,39 @@ class Client:
             or parsed.fragment
         ):
             raise ValueError("endpoint must be an HTTPS application base URL without credentials/query/fragment")
-        if not isinstance(agent_token, str) or not isinstance(app_token, str) or not agent_token or not app_token:
+        if (
+            not isinstance(agent_token, str)
+            or not isinstance(app_token, str)
+            or (not public and (not agent_token or not app_token))
+        ):
             raise ValueError("Both project Agent credential and approved Cowork App Token are required")
         if any(
             not token.isascii() or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in token)
             for token in (agent_token, app_token)
         ):
             raise ValueError("Credentials must be nonempty ASCII values without whitespace")
-        self.endpoint = endpoint.rstrip("/") + "/api/agent"
+        self.endpoint = endpoint.rstrip("/") + ("/api/network/agent" if public else "/api/agent")
+        self.public = public
         self.agent_token, self.app_token, self.task_id = agent_token, app_token, task_id
         self.snapshot = None
         self.opener = build_opener(NoRedirect())
 
     def request(self, action: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if self.agent_token:
+            headers["Authorization"] = "Bearer " + self.agent_token
+        if self.app_token:
+            headers["App-Api-Token"] = self.app_token
+        value = self.post(self.endpoint, {"action": action, "arguments": arguments}, headers)
+        if not isinstance(value.get("result"), dict):
+            raise RuntimeError("Unexpected memory API response; not assumed successful")
+        return value["result"]
+
+    def post(self, url: str, body: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
         req = Request(
-            self.endpoint,
-            data=json.dumps({"action": action, "arguments": arguments}, allow_nan=False).encode(),
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "Authorization": "Bearer " + self.agent_token,
-                "App-Api-Token": self.app_token,
-            },
+            url,
+            data=json.dumps(body, allow_nan=False).encode(),
+            headers=headers or {"Content-Type": "application/json", "Accept": "application/json"},
             method="POST",
         )
         try:
@@ -134,7 +145,15 @@ class Client:
             value = json.loads(raw)
         except HTTPError as exc:
             # Never print remote bodies, headers or credential values.
-            hint = " Check devops domain and platform App Token approval." if exc.code == 401 else ""
+            hint = (
+                (
+                    " Check personal authorization or intranet relay configuration."
+                    if self.public
+                    else " Check machine domain and platform App Token approval."
+                )
+                if exc.code == 401
+                else ""
+            )
             raise RuntimeError(f"Memory HTTP {exc.code}.{hint}") from None
         except (URLError, OSError, TimeoutError):
             raise RuntimeError(
@@ -142,9 +161,9 @@ class Client:
             ) from None
         except (UnicodeError, json.JSONDecodeError):
             raise RuntimeError("Memory endpoint returned non-JSON; check gateway authentication") from None
-        if not isinstance(value, dict) or "result" not in value:
+        if not isinstance(value, dict):
             raise RuntimeError("Unexpected memory API response; not assumed successful")
-        return value["result"]
+        return value
 
     def start(self) -> dict[str, Any]:
         result = self.request("task_start", {"task_id": self.task_id})
@@ -152,6 +171,8 @@ class Client:
         return result
 
     def call(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        if self.public and not self.agent_token and name not in {"memory_search", "memory_get"}:
+            raise RuntimeError("Personal credential required; run connect and authorize this device in the MiniApp")
         if not self.snapshot:
             self.start()
         if name in {"memory_search", "memory_get"}:
@@ -159,10 +180,21 @@ class Client:
         return self.request(name, args)
 
 
+def client_tools(client: Client) -> list[dict[str, Any]]:
+    definitions = tools()
+    if getattr(client, "public", False) and not client.agent_token:
+        definitions = definitions[:2]
+        for definition in definitions:
+            definition["description"] = (
+                "Read current approved, unexpired public knowledge; results may change between calls."
+            )
+    return definitions
+
+
 def serve(client: Client, incoming: TextIO = sys.stdin, outgoing: TextIO = sys.stdout) -> None:
     initialized = False
     ready = False
-    definitions = {t["name"]: t for t in tools()}
+    definitions = {t["name"]: t for t in client_tools(client)}
     while True:
         line = incoming.readline(131073)
         if not line:
@@ -195,7 +227,7 @@ def serve(client: Client, incoming: TextIO = sys.stdin, outgoing: TextIO = sys.s
             elif not ready:
                 raise ValueError("Initialize first")
             elif method == "tools/list":
-                result = {"tools": tools()}
+                result = {"tools": client_tools(client)}
             elif method == "tools/call":
                 name = params.get("name")
                 args = params.get("arguments", {})

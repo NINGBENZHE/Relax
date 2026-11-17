@@ -4,6 +4,66 @@
 有 Python 3.10+、能访问目标 HTTPS 网络并持有有效凭证即可使用；不需要安装
 PyTorch、Ray 或 Relax 的训练依赖。Windows 可使用 WSL。
 
+## 内网免平台 Token 接入（新增）
+
+部署模型是：设备 → 内网 HTTPS 接入服务 → 原有记忆中心。**不申请应用外发，不关闭
+Cowork 的 SSO**。平台 Token 仅保存在内网服务上，新设备只会获得自己的个人凭证。
+内网接入服务必须先由管理员部署；本命令不能让旧 Cowork 地址自动变成匿名入口。
+
+管理员提供 `RELAX_MEMORY_ENDPOINT`（内网接入服务地址）和 `RELAX_MEMORY_LOGIN_URL`
+（原 MiniApp 的 SSO 地址）后，新机器运行：
+
+```bash
+MEMORY_PYTHON=python3 bash scripts/tools/memory.sh remote connect \
+  --endpoint "$RELAX_MEMORY_ENDPOINT" --login-url "$RELAX_MEMORY_LOGIN_URL" --client codex
+```
+
+终端显示设备码。在浏览器登录 MiniApp，打开“MCP 与成员 → 连接新设备”，输入自己
+终端的设备码认领。管理员核对申请人及设备码，先授予贡献者角色，再批准设备。
+终端自动领取 90 天个人凭证，保存到私有目录并注册 MCP。凭证只允许读取、上报和反馈，
+不含审批权限；上报仍是候选，必须另外审批才能被其他设备读取。设备码 15 分钟过期，
+凭证只领取一次；领取响应丢失时重新登录，管理员可撤销此前未使用的凭证。
+授权后若连通性检查失败，已领取的凭证仍保留，可用 `check` 重试。
+
+只需要内网匿名读取时，不必登录或领取凭证：
+
+```bash
+MEMORY_PYTHON=python3 bash scripts/tools/memory.sh remote connect \
+  --endpoint "$RELAX_MEMORY_ENDPOINT" --read-only --client codex
+```
+
+匿名 MCP 只提供 search/get，读取**当前**已审批、未过期知识，不提供历史快照、回执、
+候选内容、审批记录或成员信息。匿名结果可能随审批变化；有个人凭证的读取继续使用任务固定快照。
+两种安装都不会覆盖已有目录或同名 MCP；显式更新需 `--replace` / `--replace-mcp`。
+
+### 管理员部署内网接入服务
+
+服务端需先安装包含 `/api/network/*` 和设备授权功能的 MiniApp 版本。
+`relay.py` 只转发三个明确的 Agent/设备接口，过滤客户端 Cookie、身份头和平台 Token；
+不转发管理、审批和成员接口。不增加训练依赖，也不分发共享平台凭证。
+
+```bash
+python3 scripts/tools/memory_remote/relay.py \
+  --endpoint "$COWORK_MACHINE_ENDPOINT" \
+  --app-token-file /secure/cowork-app-token \
+  --bind "$PRIVATE_LISTEN_IP" --port 8765 \
+  --cert-file /secure/tls.crt --key-file /secure/tls.key
+```
+
+`PRIVATE_LISTEN_IP` 须是明确的 RFC1918 私网 IPv4，不接受 `0.0.0.0` 或公网 IP。
+非 loopback 必须配置受客户端信任的 HTTPS 证书，客户端不提供跳过证书验证选项。
+也可默认监听 `127.0.0.1`，由公司批准的内网 HTTPS 反向代理转发；**不得接到公网入口**。
+网络 ACL 限制公司内网/VPN，禁止公网端口映射。使用进程管理器保持服务常驻，平台凭证
+文件限服务账号可读。内置限制为每源 IP 每分钟 120 次请求、最多 16 个并发和 64 KiB 请求体；
+反向代理场景按实际容量配置入口限流，进程自带限流不信任客户端转发 IP 头。
+
+新增测试覆盖设备授权、拒绝、匿名工具边界以及接入服务的路径/身份头隔离；均为 CPU
+测试，无外部网络或 GPU 依赖。MiniApp 另用实际 PostgreSQL 验证审批和一次性领取。
+
+## 原有双凭证接入（兼容模式）
+
+下面的 `setup` / `install` 连接旧机器入口，仍需要现有两项凭证。
+
 ## 一条命令完成凭证配置和 MCP 接入
 
 从本分支拉取最新代码后，在交互式终端运行：
