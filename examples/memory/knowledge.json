@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+  "kind": "strategy",
+  "domain": "coding",
+  "subtype": "workflow",
+  "title": "Validate a fix against the modified code state",
+  "summary": "Record which code revision and tests support a repair before reusing it.",
+  "content": {
+    "conditions": ["A code change claims to fix a reproducible defect"],
+    "actions": [
+      { "description": "Reproduce the defect, apply the fix, then run the relevant regression." }
+    ],
+    "avoid": ["Treating skipped tests as evidence that the fix works"],
+    "unknowns": ["This demonstration is a reviewed workflow, not evidence of an actual repair."]
+  },
+  "evidence": [{ "evidence_id": "demo:maintainer-review", "type": "human_review" }],
+  "applicability": { "scope_level": "project", "match_mode": "manual_review", "paths": [] },
+  "relations": { "derived_from": [], "supersedes": [], "conflicts_with": [] }
+}
