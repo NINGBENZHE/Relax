@@ -9,6 +9,15 @@ Use the repository implementation in `relax/memory/` and deployment entry point
 `scripts/tools/memory.sh`. Read [operations.md](references/operations.md) for commands,
 configuration, review and import/export. The service has no Ray or GPU dependency.
 
+## Remote shared center
+
+For the Cowork shared center, use `bash scripts/tools/memory.sh remote` and read
+[the remote installation guide](../../docs/zh/guide/project-memory-remote.md).
+This is a separate HTTPS backend with project membership and human review; it does
+not synchronize the local SQLite service. Install outside Git with explicit endpoint
+and per-member credential files. Never ingest approval logs or installation probes as
+reusable knowledge. Machine credentials cannot approve proposals.
+
 ## Choose the deployment
 
 - Local knowledge/experience use: `bash scripts/tools/memory.sh up` (`local` is an
