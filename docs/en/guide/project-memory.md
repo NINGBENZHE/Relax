@@ -13,13 +13,15 @@ Installation requires Bash, Python 3.10+, and a Relax checkout containing projec
 
 ## Connect to Cowork
 
-Set `RELAX_MEMORY_ENDPOINT` to the machine HTTPS base URL provided by your administrator, with no `/api/agent` or `/api/network/agent` suffix. For device enrollment, set `RELAX_MEMORY_LOGIN_URL` to the MiniApp base URL you can sign in to with a browser. The machine and browser URLs can differ. If an unauthenticated terminal request to the machine URL returns 401, use the browser URL supplied by your administrator.
+Set `RELAX_MEMORY_COWORK_ENDPOINT` to the machine HTTPS base URL provided by your administrator, with no `/api/agent` or `/api/network/agent` suffix. For device enrollment, set `RELAX_MEMORY_LOGIN_URL` to the MiniApp base URL you can sign in to with a browser. The machine and browser URLs can differ. If an unauthenticated terminal request to the machine URL returns 401, use the browser URL supplied by your administrator.
+
+The enable command downloads the compatible MCP client from the configured Cowork endpoint, verifies its release digest, installs it outside Git and registers it with Codex. With only `RELAX_MEMORY_COWORK_ENDPOINT` set, `bash scripts/tools/memory.sh enable` enables read-only access. Set `RELAX_MEMORY_LOGIN_URL` to enroll a device with write access. Repeating the command reuses a matching installation. The offline gateway runs independently.
 
 ### Read-only access
 
 ```bash
-MEMORY_PYTHON=python3 bash scripts/tools/memory.sh remote connect \
-  --endpoint "$RELAX_MEMORY_ENDPOINT" --read-only
+MEMORY_PYTHON=python3 bash scripts/tools/memory.sh enable \
+  --endpoint "$RELAX_MEMORY_COWORK_ENDPOINT" --read-only
 ```
 
 Supply an authorized application token or file path at the hidden prompt, or pass a file with `--app-token-file`. The installer checks connectivity and registers `relax-memory`. Open a new session to use `memory_search` and `memory_get`. Read-only installation requires no personal credential.
@@ -27,13 +29,13 @@ Supply an authorized application token or file path at the hidden prompt, or pas
 ### Access with proposals
 
 ```bash
-MEMORY_PYTHON=python3 bash scripts/tools/memory.sh remote connect \
-  --endpoint "$RELAX_MEMORY_ENDPOINT" --login-url "$RELAX_MEMORY_LOGIN_URL"
+MEMORY_PYTHON=python3 bash scripts/tools/memory.sh enable \
+  --endpoint "$RELAX_MEMORY_COWORK_ENDPOINT" --login-url "$RELAX_MEMORY_LOGIN_URL"
 ```
 
 Supply the application token. Open the terminal's `registration_url` in a browser, sign in, and confirm the device. Keep the installer running. Once an administrator approves the device, the installer retrieves the personal credential, checks connectivity, and registers MCP. The enrollment window is 15 minutes. If you already have a personal credential, use `remote setup --client codex`. It also accepts `--credential-file` and `--app-token-file`.
 
-The client installs under `${XDG_DATA_HOME:-$HOME/.local/share}/relax-memory-remote` and runs independently of the checkout afterward. Use `remote --prefix <directory> connect ...` to choose a directory outside the repository. Other stdio MCP clients can import the configuration from `--client config`.
+The client installs under `${XDG_DATA_HOME:-$HOME/.local/share}/relax-memory-remote` and runs independently of the checkout afterward. Use `enable --prefix <directory> ...` to choose a directory outside the repository. Other stdio MCP clients can import the configuration from `--client config`.
 
 Use `--replace --replace-mcp` to upgrade a read-only installation or replace an existing one in place. The installer reuses a saved application token only for the same endpoint. Use `--via-relay` if your administrator provides an existing intranet relay that holds the application token. If connectivity fails after the personal credential is retrieved, retry with the installed client's `check`, then run `register-codex`.
 
@@ -73,18 +75,6 @@ python3 -m relax.memory mcp \
   --state-dir "$RELAX_MEMORY_STATE" \
   --token-file "$RELAX_MEMORY_STATE/tasks/task-001/agent.json"
 ```
-
-### Optional local web demo
-
-On Linux, the separate web demo supports entering, approving, and previewing entries. Run `up` and open the returned URL. Use `status` to check the address and `down` to stop the process.
-
-```bash
-python3 examples/memory/center_demo.py up
-python3 examples/memory/center_demo.py status
-python3 examples/memory/center_demo.py down
-```
-
-The demo defaults to port 8766 and `~/.local/state/relax-memory-center`. It uses a separate database and a single management key. Keep the returned link private because it grants management access. Use the review panel after submission and the agent read preview after approval to inspect a fresh snapshot. Entries seeded on first start are demonstration data. For a backup, stop the relevant service and copy the full SQLite state directory, or use the SQLite backup API.
 
 ## Search, propose, and review
 
@@ -134,6 +124,5 @@ Local proposals use `record`. See the [local candidate example](../../../example
 | Local gateway is unreachable | Check `status`, the port, and whether `RELAX_MEMORY_ENDPOINT` points to this machine |
 | An approved entry is missing | Check the snapshot, query, expiry, and byte budget. A personal task needs a new binding or MCP process |
 | MCP is missing or the name already exists | Open a new session and check registration. Use different names for local and Cowork clients, and explicitly replace a registration when updating it |
-| Local demo URL does not open | Check `status` and `server.log` under the matching state directory. Forward the loopback port if needed in a container |
 
-The gateway, web demo, and performance examples use separate databases by default. Optional MemOS import and export support an explicitly configured self-hosted service. See the [local operations reference](../../../skills/memory/references/operations.md).
+Optional MemOS import and export support an explicitly configured self-hosted service. See the [local operations reference](../../../skills/memory/references/operations.md).

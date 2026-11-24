@@ -13,18 +13,18 @@ Use the existing Cowork center for team sharing and retain local memory for priv
 experiments and offline use. These are separate services, credentials and schemas,
 not automatically synchronized backends. Local MCP proposes a `record`; the Cowork
 adapter proposes a `body`. Select and convert content explicitly before sharing,
-and wait for Cowork review even if it was approved locally. The local gateway sync
-example is not a Cowork sync client. See the [project memory guide](../../docs/zh/guide/project-memory.md).
+and wait for Cowork review even if it was approved locally. See the [project memory guide](../../docs/zh/guide/project-memory.md).
 
 ## Remote shared center
 
-For the Cowork shared center, use `bash scripts/tools/memory.sh remote` and read
+For the Cowork shared center, use `bash scripts/tools/memory.sh enable` and read
 [the project memory guide](../../docs/zh/guide/project-memory.md).
+Use the configured machine endpoint in `RELAX_MEMORY_COWORK_ENDPOINT`. The enable command installs the compatible Cowork client and registers it with Codex. The local gateway remains independently available.
 This is a separate HTTPS backend with project membership and human review; it does
 not synchronize the local SQLite service. Install outside Git with an explicit endpoint.
 
-For direct Cowork installation, prefer `remote connect --read-only` for reads, or
-`remote connect --login-url <SSO MiniApp base>` for device-authorized uploads. Both
+For direct Cowork installation, prefer `enable --read-only` for reads, or
+`enable --login-url <SSO MiniApp base>` for device-authorized uploads. Both
 prompt secretly for the approved platform Token once and register Codex by default.
 Read-only does not require or create personal Agent JSON. Device enrollment saves
 the personal credential automatically after administrator approval. The legacy
@@ -129,27 +129,3 @@ from this local store. Cowork read-only tools read current approved knowledge;
 personal credentials use fixed task snapshots. Local credential rotation, automatic
 Cowork synchronization, GPU training/cohort automation and managed multi-node HA
 are not implemented.
-
-## Performance diagnosis prototype
-
-For script/log/trace input with historical performance cases, follow
-[the performance walkthrough](references/performance-prototype.md). It runs locally
-without a service, produces an offline review page, and demonstrates selected remote
-publication and cached reads through a temporary real HTTP service. Use `perf-doctor`
-for evidence-based interpretation. The prototype's rule-generated suggestions are
-hypotheses, not measured bottlenecks; synthetic parser tests are not GPU validation.
-Local MCP also accepts `--state-dir` with a bound agent token, avoiding a local HTTP daemon.
-
-## Visual memory center demo
-
-Use `python examples/memory/center_demo.py up` to run the single-operator browser
-center in the background. `status` returns its access URL and `down` stops only its
-own process, retaining data. Defaults: loopback port 8766 and
-`~/.local/state/relax-memory-center`. For shared access use an explicitly reachable
-host and protect the management capability; this is not multi-user authorization.
-
-The UI supports submit, approve/reject, revisions, review reminders, manual expiry,
-automatic TTL processing and actual Agent read preview. New core snapshots filter TTL
-independently of the center's 10-second sweep; old snapshots retain their contents.
-See the [project memory guide](../../docs/zh/guide/project-memory.md). Center and performance
-walkthrough databases remain separate unless deliberately integrated.

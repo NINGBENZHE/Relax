@@ -13,13 +13,15 @@ Relax 用项目记忆保存可复用的模型配置、排障经验和开发流�
 
 ## 接入 Cowork
 
-从管理员处获取机器 HTTPS 根地址，设为 `RELAX_MEMORY_ENDPOINT`，不要附加 `/api/agent` 或 `/api/network/agent`。需要设备授权时，将可在浏览器登录的 MiniApp 根地址设为 `RELAX_MEMORY_LOGIN_URL`。机器地址与网页登录地址可能不同，终端匿名访问机器地址返回 401 时，请用管理员给出的浏览器入口。
+从管理员处获取机器 HTTPS 根地址，设为 `RELAX_MEMORY_COWORK_ENDPOINT`，不要附加 `/api/agent` 或 `/api/network/agent`。需要设备授权时，将可在浏览器登录的 MiniApp 根地址设为 `RELAX_MEMORY_LOGIN_URL`。机器地址与网页登录地址可能不同，终端匿名访问机器地址返回 401 时，请用管理员给出的浏览器入口。
+
+设置 `RELAX_MEMORY_COWORK_ENDPOINT` 后运行 `bash scripts/tools/memory.sh enable`，即可从 Cowork 下载匹配版本的 MCP 客户端、校验摘要、安装并注册到 Codex。首次默认只读；配置 `RELAX_MEMORY_LOGIN_URL` 可申请设备上报权限。重复执行会检查并复用已有连接。离线网关可单独启动。
 
 ### 只读
 
 ```bash
-MEMORY_PYTHON=python3 bash scripts/tools/memory.sh remote connect \
-  --endpoint "$RELAX_MEMORY_ENDPOINT" --read-only
+MEMORY_PYTHON=python3 bash scripts/tools/memory.sh enable \
+  --endpoint "$RELAX_MEMORY_COWORK_ENDPOINT" --read-only
 ```
 
 按隐藏提示提供获授权的应用 Token 或文件路径，也可用 `--app-token-file` 指定文件。安装器检查连接并注册 `relax-memory`，新开会话后可使用 `memory_search` 和 `memory_get`。只读安装无需个人凭证。
@@ -27,13 +29,13 @@ MEMORY_PYTHON=python3 bash scripts/tools/memory.sh remote connect \
 ### 可上报
 
 ```bash
-MEMORY_PYTHON=python3 bash scripts/tools/memory.sh remote connect \
-  --endpoint "$RELAX_MEMORY_ENDPOINT" --login-url "$RELAX_MEMORY_LOGIN_URL"
+MEMORY_PYTHON=python3 bash scripts/tools/memory.sh enable \
+  --endpoint "$RELAX_MEMORY_COWORK_ENDPOINT" --login-url "$RELAX_MEMORY_LOGIN_URL"
 ```
 
 先提供应用 Token，再在浏览器打开终端输出的 `registration_url`，登录并确认设备。保持安装进程运行，管理员批准后，安装器会领取个人凭证、检查连接并注册 MCP。设备申请等待窗口为 15 分钟。已有个人凭证可用 `remote setup --client codex`，也可以通过 `--credential-file` 和 `--app-token-file` 从文件读取两项凭证。
 
-客户端默认安装到 `${XDG_DATA_HOME:-$HOME/.local/share}/relax-memory-remote`，安装后可脱离 checkout 运行。用 `remote --prefix <目录> connect ...` 自定义位置，目录应在仓库外。其他 stdio MCP 客户端可用 `--client config` 输出配置片段。
+客户端默认安装到 `${XDG_DATA_HOME:-$HOME/.local/share}/relax-memory-remote`，安装后可脱离 checkout 运行。用 `enable --prefix <目录> ...` 自定义位置，目录应在仓库外。其他 stdio MCP 客户端可用 `--client config` 输出配置片段。
 
 升级只读安装或替换已有配置时，用 `--replace --replace-mcp` 更新同一目录和注册。安装器只对相同 endpoint 复用已保存的应用 Token。管理员提供已有内网 relay 时使用 `--via-relay`，此模式由 relay 持有应用 Token。若领取个人凭证后连通检查失败，可用安装后的 `check` 重试，再执行 `register-codex`。
 
@@ -73,18 +75,6 @@ python3 -m relax.memory mcp \
   --state-dir "$RELAX_MEMORY_STATE" \
   --token-file "$RELAX_MEMORY_STATE/tasks/task-001/agent.json"
 ```
-
-### 可选的本地网页 Demo
-
-Linux 上可以用独立的网页 Demo 录入、审批和预览词条。运行 `up` 后打开返回的浏览器链接，需要查看地址时运行 `status`，结束后用 `down` 停止。
-
-```bash
-python3 examples/memory/center_demo.py up
-python3 examples/memory/center_demo.py status
-python3 examples/memory/center_demo.py down
-```
-
-Demo 默认使用端口 8766 和 `~/.local/state/relax-memory-center`，用独立的数据库和单个管理密钥。返回的链接带管理能力，应私密保存。提交后在审批工作台查看，审核通过后可通过 Agent 读取预览查看新快照。首次启动的种子词条用于演示。备份时停止对应服务后复制完整 SQLite 状态目录，或使用 SQLite backup API。
 
 ## 检索、上报与审核
 
@@ -134,6 +124,5 @@ Cowork 返回 `pending` 和候选 ID 后，由中心管理员审核。个人 MCP
 | 本地网关连不上 | 核对 `status`、端口以及 `RELAX_MEMORY_ENDPOINT` 是否仍指向本机 |
 | 已批准却搜不到 | 检查当前快照、关键词、有效期和字节预算。个人任务需要刷新绑定或 MCP 进程 |
 | 找不到 MCP 或提示同名 | 新开会话检查注册。使用不同名称区分本地和 Cowork，更新同名配置时显式替换 |
-| 本地网页打不开 | 查看对应状态目录的 `status` 和 `server.log`，在容器中按需转发 loopback 端口 |
 
-本地网关、网页 Demo 和性能示例默认使用独立数据库。MemOS 导入导出是可选的自托管适配，详见[本地运维参考](../../../skills/memory/references/operations.md)。
+MemOS 导入导出是可选的自托管适配，详见[本地运维参考](../../../skills/memory/references/operations.md)。

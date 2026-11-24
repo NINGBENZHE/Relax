@@ -10,6 +10,10 @@ PYTHON="${MEMORY_PYTHON:-python}"
 MEMORY_ENDPOINT="${RELAX_MEMORY_ENDPOINT:-http://127.0.0.1:${RELAX_MEMORY_PORT:-8765}}"
 
 case "${1:-help}" in
+    enable)
+        shift
+        exec "${PYTHON}" "${ROOT}/scripts/tools/memory_remote/client.py" enable "$@"
+        ;;
     remote)
         shift
         exec "${PYTHON}" "${ROOT}/scripts/tools/memory_remote/client.py" "$@"
@@ -30,7 +34,7 @@ case "${1:-help}" in
         exec "${PYTHON}" -c 'import json,sys,urllib.request; response=urllib.request.urlopen(sys.argv[1].rstrip("/")+"/health", timeout=5); data=json.load(response); assert data.get("service")=="relax-memory", "Unexpected service"; sys.stdout.write(json.dumps(data)+"\n")' "${MEMORY_ENDPOINT}"
         ;;
     help|-h|--help)
-        echo "Usage: bash scripts/tools/memory.sh {up|local|verify|verify-memos|status|remote}"
+        echo "Usage: bash scripts/tools/memory.sh {up|local|verify|verify-memos|status|enable|remote}"
         echo "up/local runs in the foreground. Stop with Ctrl-C; data is retained."
         ;;
     *)
