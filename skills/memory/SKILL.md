@@ -3,16 +3,23 @@ name: memory
 description: Deploy and use Relax project knowledge and experience memory, connect the optional private MemOS backend, configure agent MCP access, and validate isolation and replay. Use for project memory setup, knowledge import, candidate review, MemOS API integration or memory troubleshooting; GPU training integration is a separate workflow.
 ---
 
-# Project memory and MemOS
+# Local project memory and the Cowork center
 
 Use the repository implementation in `relax/memory/` and deployment entry point
 `scripts/tools/memory.sh`. Read [operations.md](references/operations.md) for commands,
 configuration, review and import/export. The service has no Ray or GPU dependency.
 
+Use the existing Cowork center for team sharing and retain local memory for private
+experiments and offline use. These are separate services, credentials and schemas,
+not automatically synchronized backends. Local MCP proposes a `record`; the Cowork
+adapter proposes a `body`. Select and convert content explicitly before sharing,
+and wait for Cowork review even if it was approved locally. The local gateway sync
+example is not a Cowork sync client. See the [project memory guide](../../docs/zh/guide/project-memory.md).
+
 ## Remote shared center
 
 For the Cowork shared center, use `bash scripts/tools/memory.sh remote` and read
-[the remote installation guide](../../docs/zh/guide/project-memory-remote.md).
+[the project memory guide](../../docs/zh/guide/project-memory.md).
 This is a separate HTTPS backend with project membership and human review; it does
 not synchronize the local SQLite service. Install outside Git with an explicit endpoint.
 
@@ -114,11 +121,14 @@ MemOS itself private. SDK callers and agent tools use fixed namespace/session/sn
 credentials. Local agents with filesystem access to the database or admin credential are
 outside that isolation boundary; keep server state inaccessible to their sandbox.
 
-Retrieval is deterministic keyword matching over materialized records with a **byte**
+Local retrieval is deterministic keyword matching over materialized records with a **byte**
 budget. It does not claim exact tokenizer accounting. MemOS writes are explicit and not
-automatically retried; ambiguous network failures need reconciliation. The separate center demo supports expiry scheduling. Credential rotation, shared-library
-publication UI, GPU training/cohort automation and managed multi-node HA are not implemented. Do not present those draft
-features as available.
+automatically retried; ambiguous network failures need reconciliation. The separate
+local center demo supports expiry scheduling. Do not infer Cowork server internals
+from this local store. Cowork read-only tools read current approved knowledge;
+personal credentials use fixed task snapshots. Local credential rotation, automatic
+Cowork synchronization, GPU training/cohort automation and managed multi-node HA
+are not implemented.
 
 ## Performance diagnosis prototype
 
@@ -141,5 +151,5 @@ host and protect the management capability; this is not multi-user authorization
 The UI supports submit, approve/reject, revisions, review reminders, manual expiry,
 automatic TTL processing and actual Agent read preview. New core snapshots filter TTL
 independently of the center's 10-second sweep; old snapshots retain their contents.
-See [the demo handbook](../../docs/draft/memory-center-demo.md). Center and performance
+See the [project memory guide](../../docs/zh/guide/project-memory.md). Center and performance
 walkthrough databases remain separate unless deliberately integrated.

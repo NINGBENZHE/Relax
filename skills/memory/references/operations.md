@@ -1,5 +1,10 @@
 # Memory deployment and project use
 
+See the [project memory guide](../../../docs/zh/guide/project-memory.md) for
+Cowork onboarding and local setup. The commands below administer the local gateway.
+Local `record` candidates and Cowork `body` candidates are different formats.
+There is no automatic synchronization or transfer of approval between them.
+
 ## Local startup
 
 Run from the Relax checkout with Python 3.10 or newer. No extra Python dependencies
@@ -227,7 +232,3 @@ selected MemOS cube, not automatic multi-business sharing or continuous synchron
   budgeting must use that model's tokenizer at the harness boundary.
 - No MemOS endpoint: local mode and CPU protocol tests remain available; report real
   MemOS integration as unverified. GPU integration is outside this first release.
-
-The design draft is `docs/draft/native-memory-design.md`. Planned automatic reward
-hooks, cohort management, shared publication, full v1 schema validation and management
-UI are not implemented by these commands.

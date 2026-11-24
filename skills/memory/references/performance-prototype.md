@@ -3,7 +3,8 @@
 This is a runnable workflow prototype, not a general performance root-cause engine.
 It uses Python standard-library storage and parsing. It never executes input scripts,
 submits training, calls a model, installs dependencies, or uploads data implicitly.
-The existing design drafts remain unchanged.
+See the [project memory guide](../../../docs/zh/guide/project-memory.md) for
+local setup and Cowork onboarding.
 
 ## One-command walkthrough
 

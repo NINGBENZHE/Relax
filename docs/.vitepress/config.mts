@@ -325,6 +325,7 @@ export default withMermaid({
               text: 'Development',
               items: [
                 { text: 'How to Contribute', link: '/en/guide/how-to-contribute' },
+                { text: 'Project Memory', link: '/en/guide/project-memory' },
                 { text: 'Debugging Guide', link: '/en/guide/debugging' },
                 { text: 'Trajectory Replay', link: '/en/guide/trajectory-replay' },
                 { text: 'Replay Manager', link: '/en/guide/replay-manager' },
@@ -458,6 +459,7 @@ export default withMermaid({
               text: '开发指南',
               items: [
                 { text: '如何贡献', link: '/zh/guide/how-to-contribute' },
+                { text: '项目记忆', link: '/zh/guide/project-memory' },
                 { text: '调试指南', link: '/zh/guide/debugging' },
                 { text: '轨迹重放', link: '/zh/guide/trajectory-replay' },
                 { text: 'Replay Manager', link: '/zh/guide/replay-manager' },
