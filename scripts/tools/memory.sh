@@ -22,19 +22,14 @@ case "${1:-help}" in
         "${PYTHON}" -m relax.memory init --state-dir "${RELAX_MEMORY_STATE}"
         exec "${PYTHON}" -m relax.memory serve --state-dir "${RELAX_MEMORY_STATE}" --host "${RELAX_MEMORY_HOST:-127.0.0.1}" --port "${RELAX_MEMORY_PORT:-8765}"
         ;;
-    verify|verify-memos)
-        verify_args=(--endpoint "${MEMORY_ENDPOINT}" --admin-file "${RELAX_MEMORY_STATE}/admin.json")
-        if [[ "$1" == "verify-memos" ]]; then
-            [[ -n "${MEMOS_ENDPOINT:-}" ]] || { echo "Set MEMOS_ENDPOINT to an existing MemOS self-hosted API; this script does not deploy MemOS." >&2; exit 1; }
-            verify_args+=(--memos-endpoint "${MEMOS_ENDPOINT}")
-        fi
-        exec "${PYTHON}" "${ROOT}/examples/memory/verify.py" "${verify_args[@]}"
+    verify)
+        exec "${PYTHON}" "${ROOT}/examples/memory/verify.py" --endpoint "${MEMORY_ENDPOINT}" --admin-file "${RELAX_MEMORY_STATE}/admin.json"
         ;;
     status)
         exec "${PYTHON}" -c 'import json,sys,urllib.request; response=urllib.request.urlopen(sys.argv[1].rstrip("/")+"/health", timeout=5); data=json.load(response); assert data.get("service")=="relax-memory", "Unexpected service"; sys.stdout.write(json.dumps(data)+"\n")' "${MEMORY_ENDPOINT}"
         ;;
     help|-h|--help)
-        echo "Usage: bash scripts/tools/memory.sh {up|local|verify|verify-memos|status|enable|remote}"
+        echo "Usage: bash scripts/tools/memory.sh {up|local|verify|status|enable|remote}"
         echo "up/local runs in the foreground. Stop with Ctrl-C; data is retained."
         ;;
     *)

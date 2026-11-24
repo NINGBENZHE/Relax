@@ -31,7 +31,6 @@ def test_memory_up_status_verify_and_restart(tmp_path):
         RELAX_MEMORY_ENDPOINT=endpoint,
         MEMORY_PYTHON=sys.executable,
     )
-    environment.pop("MEMOS_ENDPOINT", None)
     snapshot = None
     for command in ("up", "local"):
         with (tmp_path / f"{command}.log").open("w") as log:
@@ -78,10 +77,5 @@ def test_memory_up_status_verify_and_restart(tmp_path):
                     process.kill()
                     process.wait(timeout=5)
             assert process.returncode == 0
-    result = subprocess.run(
-        ["bash", script, "verify-memos"], env=environment, capture_output=True, text=True, timeout=5
-    )
-    assert result.returncode == 1
-    assert "Set MEMOS_ENDPOINT" in result.stderr
     result = subprocess.run(["bash", script, "init-env"], env=environment, capture_output=True, text=True, timeout=5)
     assert result.returncode == 2

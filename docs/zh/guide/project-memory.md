@@ -124,5 +124,3 @@ Cowork 返回 `pending` 和候选 ID 后，由中心管理员审核。个人 MCP
 | 本地网关连不上 | 核对 `status`、端口以及 `RELAX_MEMORY_ENDPOINT` 是否仍指向本机 |
 | 已批准却搜不到 | 检查当前快照、关键词、有效期和字节预算。个人任务需要刷新绑定或 MCP 进程 |
 | 找不到 MCP 或提示同名 | 新开会话检查注册。使用不同名称区分本地和 Cowork，更新同名配置时显式替换 |
-
-MemOS 导入导出是可选的自托管适配，详见[本地运维参考](../../../skills/memory/references/operations.md)。

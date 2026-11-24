@@ -124,5 +124,3 @@ Local proposals use `record`. See the [local candidate example](../../../example
 | Local gateway is unreachable | Check `status`, the port, and whether `RELAX_MEMORY_ENDPOINT` points to this machine |
 | An approved entry is missing | Check the snapshot, query, expiry, and byte budget. A personal task needs a new binding or MCP process |
 | MCP is missing or the name already exists | Open a new session and check registration. Use different names for local and Cowork clients, and explicitly replace a registration when updating it |
-
-Optional MemOS import and export support an explicitly configured self-hosted service. See the [local operations reference](../../../skills/memory/references/operations.md).

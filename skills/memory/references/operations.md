@@ -152,30 +152,7 @@ Use `candidate_list` with `namespace` to list pending candidates.
 
 Create a new task binding with `project` after commits/expiry to see the new state.
 Old task snapshots preserve their original records. Exact duplicate active records are
-deduplicated within a namespace. A failed/ambiguous MemOS export is different: it must
-be reconciled manually before retry because upstream write idempotency is not proven.
-
-## Connect an existing private MemOS service
-
-MemOS is optional. The startup script only starts the lightweight Relax Memory gateway;
-it does not install or start MemOS, Neo4j, Qdrant or model services. To use MemOS, obtain
-a reachable self-hosted `/product` API endpoint and an authorized user/cube from its
-operator. Its model and storage dependencies are managed on that service's side.
-
-Set `MEMOS_ENDPOINT` to the service base URL (without `/product`). If it requires
-an authorization header, set `MEMOS_AUTHORIZATION` through your credential environment.
-Select an existing authorized user with `MEMOS_VERIFY_USER` (default `root` for a fresh
-upstream service). The real probe creates a new random cube, writes synthetic content,
-retrieves it and stages the result in Relax; it retains the probe cube for inspection.
-
-```bash
-# Set MEMOS_ENDPOINT to your existing private service before this command.
-bash scripts/tools/memory.sh verify-memos
-```
-
-There is no implicit MemOS address fallback. No endpoint means the script fails before
-sending a probe. Local Memory can run and pass `verify` without MemOS or model services.
-A successful protocol fixture does not establish real MemOS integration.
+deduplicated within a namespace.
 
 ## Service lifecycle and persistence
 
@@ -199,36 +176,12 @@ online backup API. Copying only a running `memory.sqlite` file can omit WAL data
 package does not implement automated backup/HA. Keep the data directory on a mounted
 persistent volume if the Relax environment itself runs in a container.
 
-## Import and export
-
-Import reads an authorized cube and stages retrieved content; it does not import a
-complete cube or mark upstream summaries as verified. `MEMOS_AUTHORIZATION` can contain
-the authorization header value required by an existing protected endpoint. Do not pass
-credentials on the command line.
-
-```bash
-python -m relax.memory memos-import \
-  --token-file "$RELAX_MEMORY_STATE/admin.json" \
-  --namespace team-a/dev/my-project --session import-001 \
-  --memos-endpoint http://127.0.0.1:8000 --memos-user my-user --cube my-cube \
-  --query 'relevant project workflow'
-```
-
-Review/commit candidates, then create a new snapshot. Approved snapshots can be
-explicitly exported with `memos-export`, the same endpoint/user/cube/namespace options,
-and `--snapshot SNAPSHOT_ID`. The cube must already exist. This is a copy into the
-selected MemOS cube, not automatic multi-business sharing or continuous synchronization.
-
 ## Troubleshooting and validation limits
 
 - HTTP 403: wrong credential, agent attempting an admin action, or browser Origin.
 - HTTP 400: invalid record, stale expected_revision, incorrect namespace/snapshot or
   missing required argument. Inspect the request locally without exposing credentials.
-- MemOS application error: ask the service operator to inspect its logs; health alone does not
-  validate Neo4j/Qdrant or model requests. No automatic fallback to public models.
 - Search empty after review: the agent still has its old snapshot, or the keyword query
   does not match. Start a new task binding; do not overwrite the old receipt.
 - Model context too large: lower `max_bytes`. This is a byte limit; exact model token
   budgeting must use that model's tokenizer at the harness boundary.
-- No MemOS endpoint: local mode and CPU protocol tests remain available; report real
-  MemOS integration as unverified. GPU integration is outside this first release.

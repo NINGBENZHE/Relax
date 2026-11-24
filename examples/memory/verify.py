@@ -1,23 +1,19 @@
 # Copyright (c) 2026 Relax Authors. All Rights Reserved.
 
-"""Exercise a running gateway; optionally perform real MemOS
-write/search/import."""
+"""Verify local review, snapshot isolation and read receipt replay."""
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
-import time
 import uuid
 from pathlib import Path
 
 from relax.memory.client import MemoryClient
-from relax.memory.memos import MemOSClient
 
 
-def verify(endpoint: str, admin_file: str, memos_endpoint: str | None = None) -> dict:
+def verify(endpoint: str, admin_file: str) -> dict:
     admin = MemoryClient(endpoint, json.loads(Path(admin_file).read_text())["token"])
     namespace = "verification/" + uuid.uuid4().hex
     old = admin.call("snapshot_create", namespace=namespace)
@@ -45,52 +41,21 @@ def verify(endpoint: str, admin_file: str, memos_endpoint: str | None = None) ->
         "session_bind", namespace=namespace + "/other", snapshot_id=other["snapshot_id"], session_id="c"
     )
     assert not MemoryClient(endpoint, other_credential["token"]).search("regression")["items"]
-    result = {
+    return {
         "gateway": "passed",
         "namespace": namespace,
         "snapshot_isolation": "passed",
         "private_staging": "passed",
         "receipt_replay": "passed",
-        "memos": "not_requested",
     }
-    if memos_endpoint:
-        # A fresh disposable cube avoids changing any business memory. Retain it for inspection.
-        cube = "relax-verification-" + uuid.uuid4().hex
-        # Cube creation requires a registered owner. Fresh self-hosted MemOS
-        # initializes root; existing deployments can select a registered user.
-        memos = MemOSClient(
-            memos_endpoint,
-            os.environ.get("MEMOS_VERIFY_USER", "root"),
-            cube,
-            os.environ.get("MEMOS_AUTHORIZATION", ""),
-        )
-        memos.create_cube()
-        marker = "Memory verification marker " + uuid.uuid4().hex
-        memos.add(marker + ": record code revision before validating a repair.", {"relax_probe": marker})
-        candidates = []
-        for _ in range(12):
-            candidates = memos.search(marker)
-            if candidates:
-                break
-            time.sleep(2)
-        assert any(marker in item["content"]["text"] for item in candidates), (
-            "Real MemOS write/search did not preserve the probe"
-        )
-        for index, item in enumerate(candidates):
-            staged = reader.propose(item, "memos-probe-" + str(index))
-            assert staged["status"] == "staged"
-        assert reader.search("regression")["items"] == receipt["items"]
-        result.update(memos="passed", memos_cube=cube, imported_candidates=len(candidates))
-    return result
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--endpoint", required=True)
     parser.add_argument("--admin-file", required=True)
-    parser.add_argument("--memos-endpoint")
     args = parser.parse_args()
-    sys.stdout.write(json.dumps(verify(args.endpoint, args.admin_file, args.memos_endpoint), indent=2) + "\n")
+    sys.stdout.write(json.dumps(verify(args.endpoint, args.admin_file), indent=2) + "\n")
 
 
 if __name__ == "__main__":

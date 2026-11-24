@@ -1,13 +1,13 @@
 ---
 name: memory
-description: Deploy and use Relax project knowledge and experience memory, connect the optional private MemOS backend, configure agent MCP access, and validate isolation and replay. Use for project memory setup, knowledge import, candidate review, MemOS API integration or memory troubleshooting; GPU training integration is a separate workflow.
+description: Set up offline Relax project memory and connect Codex to the Cowork memory center. Use for MCP installation, candidate review, search, snapshot isolation and receipt replay.
 ---
 
 # Local project memory and the Cowork center
 
 Use the repository implementation in `relax/memory/` and deployment entry point
 `scripts/tools/memory.sh`. Read [operations.md](references/operations.md) for commands,
-configuration, review and import/export. The service has no Ray or GPU dependency.
+configuration and review. The service has no Ray or GPU dependency.
 
 Use the existing Cowork center for team sharing and retain local memory for private
 experiments and offline use. These are separate services, credentials and schemas,
@@ -54,14 +54,10 @@ the saved Token only for the same endpoint. Do not redistribute another user’s
 Never ingest approval logs or installation probes as
 reusable knowledge. Machine credentials cannot approve proposals.
 
-## Choose the deployment
+## Local deployment
 
-- Local knowledge/experience use: `bash scripts/tools/memory.sh up` (`local` is an
-  alias). It runs Python directly in the foreground and stores private state outside
-  the repository. No Docker, MemOS, model service or additional Python package is required.
-- Existing MemOS: use `memos-import`/`memos-export` against its self-hosted `/product`
-  API; do not substitute the hosted Cloud API. Check its version and response contract.
-  This package connects to an endpoint; it does not deploy the upstream service.
+Run `bash scripts/tools/memory.sh up` (`local` is an alias) to start the gateway
+in the foreground. It uses Python's standard library and stores private state outside the repository.
 
 Before starting, inspect the state directory, existing service and chosen port. Reuse
 existing credentials. Stop a foreground service with Ctrl-C; the database is retained.
@@ -90,41 +86,27 @@ a new snapshot; existing tasks retain their old view. Feedback does not update r
 
 ## Validation and failure boundaries
 
-Run `verify` against the gateway. Run `verify-memos` only with an explicitly configured `MEMOS_ENDPOINT`;
-it writes synthetic probes to a new cube and leaves them for inspection. Record the
-returned namespace/cube for subsequent operator cleanup.
-
 Report these separately:
 
 1. CPU regressions: `CUDA_VISIBLE_DEVICES='' PYTHONPATH=. python -m pytest -q tests/cpu/memory`.
 2. Live local gateway: `bash scripts/tools/memory.sh verify`.
-3. Live MemOS: `bash scripts/tools/memory.sh verify-memos`.
-4. Actual Codex/Claude Code tool use, when those clients are available.
+3. Actual Codex/Claude Code tool use, when those clients are available.
 
-An HTTP fixture proves protocol handling, not MemOS deployment. A health check proves
-liveness, not working embedding or retrieval. A local read-only snapshot is not a
-snapshot of all upstream MemOS data: imports materialize only reviewed retrieved entries.
 Keep agent tools limited to search/get/propose/feedback. Never route a model-provided
-namespace, cube, credential or verification decision into administrator operations.
+namespace, credential or verification decision into administrator operations.
 
 If deployment fails, inspect this project's logs and readiness first; fix the concrete
 cause and retry at most three times before reporting the remaining prerequisite.
-Without an existing MemOS endpoint, complete local validation and report MemOS checks
-as unavailable. Do not install infrastructure or send project data to hosted services
-merely to turn a check green.
 
 ## Current implementation limits
 
 This is an initial private deployment, not a hardened public SaaS. The service binds
-loopback by default; use a TLS/authenticated ingress or SSH tunnel for remote clients and keep
-MemOS itself private. SDK callers and agent tools use fixed namespace/session/snapshot
+loopback by default; use a TLS/authenticated ingress or SSH tunnel for remote clients. SDK callers and agent tools use fixed namespace/session/snapshot
 credentials. Local agents with filesystem access to the database or admin credential are
 outside that isolation boundary; keep server state inaccessible to their sandbox.
 
 Local retrieval is deterministic keyword matching over materialized records with a **byte**
-budget. It does not claim exact tokenizer accounting. MemOS writes are explicit and not
-automatically retried; ambiguous network failures need reconciliation. The separate
-local center demo supports expiry scheduling. Do not infer Cowork server internals
+budget. It does not claim exact tokenizer accounting. Do not infer Cowork server internals
 from this local store. Cowork read-only tools read current approved knowledge;
 personal credentials use fixed task snapshots. Local credential rotation, automatic
 Cowork synchronization, GPU training/cohort automation and managed multi-node HA

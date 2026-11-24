@@ -13,9 +13,8 @@ from typing import Any
 
 from relax.memory.client import LocalMemoryClient, MemoryClient
 from relax.memory.mcp import serve_stdio
-from relax.memory.memos import MemOSClient
 from relax.memory.server import make_server
-from relax.memory.store import MemoryStore, digest, encode
+from relax.memory.store import MemoryStore
 
 
 def output(value: Any, destination: str | None) -> None:
@@ -39,7 +38,7 @@ def main() -> None:
     server.add_argument("--state-dir", required=True)
     server.add_argument("--host", default="127.0.0.1")
     server.add_argument("--port", type=int, default=8765)
-    for name in ("request", "mcp", "project", "memos-import", "memos-export"):
+    for name in ("request", "mcp", "project"):
         command = sub.add_parser(name)
         command.add_argument("--endpoint", default=os.environ.get("RELAX_MEMORY_ENDPOINT", "http://127.0.0.1:8765"))
         command.add_argument("--token-file", required=True)
@@ -54,17 +53,6 @@ def main() -> None:
             command.add_argument("--namespace", required=True)
             command.add_argument("--session", required=True)
             command.add_argument("--output-dir", required=True)
-        if name.startswith("memos-"):
-            command.add_argument("--memos-endpoint", required=True)
-            command.add_argument("--memos-user", required=True)
-            command.add_argument("--cube", required=True)
-            command.add_argument("--authorization-env", default="MEMOS_AUTHORIZATION")
-            command.add_argument("--namespace", required=True)
-            if name == "memos-import":
-                command.add_argument("--query", required=True)
-                command.add_argument("--session", required=True)
-            else:
-                command.add_argument("--snapshot", required=True)
     args = parser.parse_args()
     if args.command == "init":
         state = Path(args.state_dir).resolve()
@@ -135,39 +123,6 @@ def main() -> None:
         if args.action == "session_bind" and not args.output:
             parser.error("session_bind requires --output to keep credentials off terminal output")
         output(client.call(args.action, **arguments), args.output)
-    else:
-        memos = MemOSClient(
-            args.memos_endpoint, args.memos_user, args.cube, os.environ.get(args.authorization_env, "")
-        )
-        if args.command == "memos-import":
-            candidates = memos.search(args.query)
-            results = [
-                client.call(
-                    "candidate_stage",
-                    namespace=args.namespace,
-                    session=args.session,
-                    idempotency_key="memos:" + digest(encode(record)),
-                    record=record,
-                )
-                for record in candidates
-            ]
-            output({"candidates": results, "status": "staged_only"}, args.output)
-        else:
-            snapshot = client.call("snapshot_get", namespace=args.namespace, snapshot_id=args.snapshot)
-            # Explicit export is a trusted operation, not an agent tool. No retries.
-            results = []
-            for record in snapshot["records"]:
-                results.append(
-                    memos.add(
-                        encode(record),
-                        {
-                            "relax_memory_id": record["id"],
-                            "relax_revision": record["revision"],
-                            "relax_content_hash": record["integrity"]["content_sha256"],
-                        },
-                    )
-                )
-            output({"exported": len(results), "upstream_responses": results}, args.output)
 
 
 if __name__ == "__main__":
