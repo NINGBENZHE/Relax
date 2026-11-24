@@ -37,6 +37,8 @@ MEMORY_PYTHON=python3 bash scripts/tools/memory.sh enable \
 
 客户端默认安装到 `${XDG_DATA_HOME:-$HOME/.local/share}/relax-memory-remote`，安装后可脱离 checkout 运行。用 `enable --prefix <目录> ...` 自定义位置，目录应在仓库外。其他 stdio MCP 客户端可用 `--client config` 输出配置片段。
 
+已接入 Cowork 的机器拉取新版 Relax 后，在同一安装目录重新执行 `bash scripts/tools/memory.sh enable`，即可更新 MCP 工具并复用已有凭证。使用自定义目录或注册名时沿用原来的 `--prefix` 或 `--name`，然后新开 Codex 会话。
+
 升级只读安装或替换已有配置时，用 `--replace --replace-mcp` 更新同一目录和注册。安装器只对相同 endpoint 复用已保存的应用 Token。管理员提供已有内网 relay 时使用 `--via-relay`，此模式由 relay 持有应用 Token。若领取个人凭证后连通检查失败，可用安装后的 `check` 重试，再执行 `register-codex`。
 
 ## 启动本地记忆
@@ -79,6 +81,8 @@ python3 -m relax.memory mcp \
 ## 检索、上报与审核
 
 任务开始时可让 Agent 按模型、模块或症状检索，按 ID 展开相关内容，并核对当前代码、版本和适用条件。MCP 的 `max_bytes` 控制返回字节数。具有写权限的客户端可用 `memory_propose` 上报候选，也可按读取回执用 `memory_feedback` 标记有用、过时或错误。反馈不会直接修改词条。
+
+在 Cowork，修订稿待审期间仍可读取原发布版本。检索和读取结果中的 `has_more` 表示有匹配项未返回；根据 `omitted_by_budget` 或 `omitted_by_limit` 提高字节预算或条数上限。要反馈某一条，在 `memory_feedback` 中传入读取结果的 `memory_id`（取自 `items[].id`）和 `revision`，并保留 `receipt_id` 以定位历史版本。旧的整份回执反馈仍然可用。
 
 Cowork 的已安装客户端也可直接调用。自定义安装目录时使用安装器输出的路径。
 

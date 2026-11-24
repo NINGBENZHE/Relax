@@ -37,6 +37,8 @@ Supply the application token. Open the terminal's `registration_url` in a browse
 
 The client installs under `${XDG_DATA_HOME:-$HOME/.local/share}/relax-memory-remote` and runs independently of the checkout afterward. Use `enable --prefix <directory> ...` to choose a directory outside the repository. Other stdio MCP clients can import the configuration from `--client config`.
 
+To refresh the Cowork MCP tools after pulling this branch, rerun `bash scripts/tools/memory.sh enable` with the same prefix and registration name, then start a new Codex session. The installer reuses the existing credentials.
+
 Use `--replace --replace-mcp` to upgrade a read-only installation or replace an existing one in place. The installer reuses a saved application token only for the same endpoint. Use `--via-relay` if your administrator provides an existing intranet relay that holds the application token. If connectivity fails after the personal credential is retrieved, retry with the installed client's `check`, then run `register-codex`.
 
 ## Start local memory
@@ -79,6 +81,8 @@ python3 -m relax.memory mcp \
 ## Search, propose, and review
 
 At task start, ask the agent to search by model, module, or symptom, then open relevant entries by ID and check current code, versions, and applicability. MCP's `max_bytes` controls the response in bytes. Clients with write access can submit candidates with `memory_propose` or use a read receipt to mark evidence helpful, outdated, or incorrect with `memory_feedback`. Feedback records an assessment without changing the entry.
+
+On Cowork, readers can still access the published revision while an edit awaits review. In search and get results, `has_more` indicates matching entries were omitted. Use `omitted_by_budget` and `omitted_by_limit` to decide whether to increase the byte or item limit. To rate one entry, pass its `memory_id` (from `items[].id`) and `revision` to `memory_feedback`; include the `receipt_id` to identify a historical revision. Whole-receipt feedback remains supported.
 
 You can also call the installed Cowork client directly. With a custom install directory, use the launcher path printed by the installer.
 
