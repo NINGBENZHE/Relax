@@ -22,7 +22,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 # Update together with the tested Cowork client release.
 FILES = {
     "client.py": "10562c85eae2675d3d67761da9e18dc5c0ecdf23128c570a6eb043a30734321a",
-    "bridge.py": "b1a86edbb189b3696550dd892a586ff5ce7aed2052ef408394ab0cb07f182083",
+    "bridge.py": "c4abce449382e18ea72c7820b791a5981c6e0adeda5a38ce217cc301db9ecee6",
 }
 
 
@@ -100,7 +100,7 @@ def main() -> int:
             headers["App-Api-Token"] = supplied.expanduser().read_text().strip()
             if args.app_token_file is None and command in {"enable", "install", "connect", "setup"}:
                 original = [*original, "--app-token-file", str(supplied)]
-        req = Request(endpoint + "/api/network/client-bundle", data=b'{"bundle_version":2}', headers=headers)
+        req = Request(endpoint + "/api/network/client-bundle", data=b'{"bundle_version":3}', headers=headers)
         with build_opener(NoRedirect()).open(req, timeout=30) as response:
             raw = response.read(256 * 1024 + 1)
         if len(raw) > 256 * 1024:

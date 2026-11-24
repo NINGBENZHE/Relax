@@ -6,7 +6,7 @@ Relax project memory stores reusable model configurations, troubleshooting lesso
 | --- | --- | --- |
 | Runtime | Standalone stdio MCP client connects to an existing HTTPS center | stdio MCP uses a local HTTP gateway or accesses SQLite directly |
 | Credentials | Direct access requires an authorized application token. Proposing also requires a personal credential | An administrator credential handles review. An agent credential binds a namespace, task, and snapshot |
-| Reads | Read-only mode shows current approved, unexpired entries. Personal tasks use a fixed snapshot | Each task reads the snapshot created at binding |
+| Reads | Read-only installations read current approved, unexpired entries. Personal credentials default to a task snapshot and can also read the current publication | Each task reads the snapshot created at binding |
 | Proposal format | `memory_propose(body, idempotency_key)` | `memory_propose(record, idempotency_key)` |
 
 Installation requires Bash, Python 3.10+, and a Relax checkout containing project memory. Automatic registration requires the Codex CLI. Neither mode requires a GPU, Ray, Docker, or a model service.
@@ -82,7 +82,7 @@ python3 -m relax.memory mcp \
 
 At task start, ask the agent to search by model, module, or symptom, then open relevant entries by ID and check current code, versions, and applicability. MCP's `max_bytes` controls the response in bytes. Clients with write access can submit candidates with `memory_propose` or use a read receipt to mark evidence helpful, outdated, or incorrect with `memory_feedback`. Feedback records an assessment without changing the entry.
 
-On Cowork, readers can still access the published revision while an edit awaits review. In search and get results, `has_more` indicates matching entries were omitted. Use `omitted_by_budget` and `omitted_by_limit` to decide whether to increase the byte or item limit. To rate one entry, pass its `memory_id` (from `items[].id`) and `revision` to `memory_feedback`; include the `receipt_id` to identify a historical revision. Whole-receipt feedback remains supported.
+On Cowork, readers can still access the published revision while an edit awaits review. In search and get results, `has_more` indicates matching entries were omitted. Use `omitted_by_budget` and `omitted_by_limit` to decide whether to increase the byte or item limit. To rate one entry, pass its `memory_id` (from `items[].id`) and `revision` to `memory_feedback`; include the `receipt_id` to identify a historical revision. Optional `reason` and `evidence` fields can explain the assessment or cite a counterexample. Whole-receipt feedback remains supported.
 
 You can also call the installed Cowork client directly. With a custom install directory, use the launcher path printed by the installer.
 
@@ -116,7 +116,9 @@ Each candidate should address one reusable problem. Describe the trigger, action
 
 Required fields are `title`, `summary`, `content`, `source`, `owner`, `kind`, and `evidence_level`. Use `strategy`, `lesson`, or `episode` for `kind`. The evidence levels `documented`, `tested`, and `hypothesis` distinguish documentation, actual tests, and unverified claims. Dates are timezone-aware ISO8601 or `null`. The review date prompts a check, while expiry affects inclusion in new snapshots. Reuse the same idempotency key for a network retry with the same content.
 
-A Cowork proposal returns `pending` and a candidate ID for administrator review. A personal MCP process starts its task snapshot on the first tool call. After approval, restart the MCP process or open a new session to see the update. Read-only mode shows current approved entries.
+An administrator reviews Cowork candidates. To see a newly published revision, pass `mode="current"` to the MCP tools `memory_search` or `memory_get`. For reproducible reads, use a personal credential and `mode="snapshot"`. Omitting the mode preserves the default task snapshot for personal credentials and current reads for read-only installations.
+
+To page through a long entry, take its ID and `revision` from a search result and call `memory_get(memory_id=…, revision=…, offset_bytes=0, max_bytes=…)`. Pass each returned `next_offset_bytes` as the next `offset_bytes`, keeping the same revision and read mode, until there are no further pages. If a read-only installation receives a revision conflict (HTTP 409), search again and start at the beginning of the new revision.
 
 Local proposals use `record`. See the [local candidate example](../../../examples/memory/knowledge.json). After checking the evidence, an administrator uses `candidate_list` and `candidate_commit`. See the [local operations reference](../../../skills/memory/references/operations.md#add-and-review-knowledge). After approval, bind a new session in a new directory and update the MCP credential path. Ordinary revisions and expiry preserve old snapshots. To share a local entry, convert it to the Cowork candidate format and submit it for review there.
 
@@ -126,5 +128,5 @@ Local proposals use `record`. See the [local candidate example](../../../example
 | --- | --- |
 | Cowork returns 401 or 403 | Verify the machine URL, application token, personal credential expiry, and membership. Run the installed client's `check` |
 | Local gateway is unreachable | Check `status`, the port, and whether `RELAX_MEMORY_ENDPOINT` points to this machine |
-| An approved entry is missing | Check the snapshot, query, expiry, and byte budget. A personal task needs a new binding or MCP process |
+| An approved entry is missing | Check the query, expiry and byte budget. Use `current` to check a new Cowork publication. For a fresh local snapshot, create a new task binding |
 | MCP is missing or the name already exists | Open a new session and check registration. Use different names for local and Cowork clients, and explicitly replace a registration when updating it |

@@ -6,7 +6,7 @@ Relax 用项目记忆保存可复用的模型配置、排障经验和开发流�
 | --- | --- | --- |
 | 运行方式 | 独立 stdio MCP 客户端连接已有 HTTPS 中心 | stdio MCP 通过本机 HTTP 网关或直接访问 SQLite |
 | 凭证 | 直连需要获授权的应用 Token，可上报模式另需个人凭证 | 管理员凭证用于审核，Agent 凭证绑定命名空间、任务和快照 |
-| 读取 | 只读模式查看当前已批准且未到期的词条。个人任务读取固定快照 | 每个任务读取绑定时创建的固定快照 |
+| 读取 | 只读安装查当前已批准且未到期的词条。个人凭证默认查任务快照，也可显式查当前发布版 | 每个任务读取绑定时创建的固定快照 |
 | 候选格式 | `memory_propose(body, idempotency_key)` | `memory_propose(record, idempotency_key)` |
 
 运行安装命令需要 Bash、Python 3.10+ 和包含记忆功能的 Relax checkout，自动注册需要 Codex CLI。两种方式都无需 GPU、Ray、Docker 或模型服务。
@@ -82,7 +82,7 @@ python3 -m relax.memory mcp \
 
 任务开始时可让 Agent 按模型、模块或症状检索，按 ID 展开相关内容，并核对当前代码、版本和适用条件。MCP 的 `max_bytes` 控制返回字节数。具有写权限的客户端可用 `memory_propose` 上报候选，也可按读取回执用 `memory_feedback` 标记有用、过时或错误。反馈不会直接修改词条。
 
-在 Cowork，修订稿待审期间仍可读取原发布版本。检索和读取结果中的 `has_more` 表示有匹配项未返回；根据 `omitted_by_budget` 或 `omitted_by_limit` 提高字节预算或条数上限。要反馈某一条，在 `memory_feedback` 中传入读取结果的 `memory_id`（取自 `items[].id`）和 `revision`，并保留 `receipt_id` 以定位历史版本。旧的整份回执反馈仍然可用。
+在 Cowork，修订稿待审期间仍可读取原发布版本。检索和读取结果中的 `has_more` 表示有匹配项未返回；根据 `omitted_by_budget` 或 `omitted_by_limit` 提高字节预算或条数上限。要反馈某一条，在 `memory_feedback` 中传入读取结果的 `memory_id`（取自 `items[].id`）和 `revision`，并保留 `receipt_id` 以定位历史版本。可选的 `reason` 和 `evidence` 可记录判断依据和反例。旧的整份回执反馈仍然可用。
 
 Cowork 的已安装客户端也可直接调用。自定义安装目录时使用安装器输出的路径。
 
@@ -116,7 +116,9 @@ MEMORY="${XDG_DATA_HOME:-$HOME/.local/share}/relax-memory-remote/relax-memory"
 
 必填字段为 `title`、`summary`、`content`、`source`、`owner`、`kind` 和 `evidence_level`。`kind` 为 `strategy`、`lesson` 或 `episode`。`evidence_level` 区分文档依据（`documented`）、实际测试（`tested`）和待验证假设（`hypothesis`）。日期填写带时区的 ISO8601 或 `null`。复核日是检查提醒，有效期决定还能否进入新快照。相同内容网络重试时复用原幂等键。
 
-Cowork 返回 `pending` 和候选 ID 后，由中心管理员审核。个人 MCP 进程首次调用时取得任务快照，审批后重启 MCP 进程或新开会话以读取更新。只读模式读取中心的当前已批准内容。
+Cowork 候选由管理员审核。需要确认刚发布的修订时，在 MCP 的 `memory_search` 或 `memory_get` 传 `mode="current"`。要复现实验，用个人凭证传 `mode="snapshot"` 读取同一任务快照。省略 `mode` 时，个人凭证沿用快照，只读安装沿用当前发布版。
+
+长词条可从搜索结果取出 ID 和 `revision`，先调用 `memory_get(memory_id=…, revision=…, offset_bytes=0, max_bytes=…)`，再把返回的 `next_offset_bytes` 作为下一次的 `offset_bytes`，沿用同一版本和读取模式，直到没有后续页。只读安装如果在翻页期间遇到版本冲突（HTTP 409），重新搜索并从新版本开头读取。
 
 本地上报使用 `record`，结构见[本地候选示例](../../../examples/memory/knowledge.json)。管理员检查证据后执行 `candidate_list` 和 `candidate_commit`，详细命令见[本地运维参考](../../../skills/memory/references/operations.md#add-and-review-knowledge)。审核后用新的 session 和目录创建任务绑定，并更新 MCP 凭证路径。普通修订和到期不会改写旧快照。需要分享本地经验时，将其转换为 Cowork 的候选格式并重新审核。
 
@@ -126,5 +128,5 @@ Cowork 返回 `pending` 和候选 ID 后，由中心管理员审核。个人 MCP
 | --- | --- |
 | Cowork 返回 401 或 403 | 核对机器地址、应用 Token、个人凭证到期状态和成员权限，用已安装客户端的 `check` 验证 |
 | 本地网关连不上 | 核对 `status`、端口以及 `RELAX_MEMORY_ENDPOINT` 是否仍指向本机 |
-| 已批准却搜不到 | 检查当前快照、关键词、有效期和字节预算。个人任务需要刷新绑定或 MCP 进程 |
+| 已批准却搜不到 | 核对关键词、有效期和字节预算。Cowork 可显式用 `current` 查询新发布内容；本地快照需新建任务绑定 |
 | 找不到 MCP 或提示同名 | 新开会话检查注册。使用不同名称区分本地和 Cowork，更新同名配置时显式替换 |

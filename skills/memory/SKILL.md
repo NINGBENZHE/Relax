@@ -108,6 +108,6 @@ outside that isolation boundary; keep server state inaccessible to their sandbox
 Local retrieval is deterministic keyword matching over materialized records with a **byte**
 budget. It does not claim exact tokenizer accounting. Do not infer Cowork server internals
 from this local store. Cowork read-only tools read current approved knowledge;
-personal credentials use fixed task snapshots. Local credential rotation, automatic
+personal credentials default to task snapshots and can select the current publication with `mode="current"`. Local credential rotation, automatic
 Cowork synchronization, GPU training/cohort automation and managed multi-node HA
 are not implemented.
